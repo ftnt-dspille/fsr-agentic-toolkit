@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
@@ -133,9 +134,40 @@ def _h_get_record(client, *, module, ref, fields=None, summary=False) -> Any:
     return project(rec, fields=fields, summary=summary)
 
 
+_TEXT_TYPES = {"string", "text", "textarea", "richtext", "html", "email", "url", "domain",
+               "ipv4", "ipv6", "filehash", "phone"}
+
+
+def _text_fields(client, module) -> list[str]:
+    try:
+        desc = client.describe_module(module)
+    except Exception:  # noqa: BLE001 - no schema means no fallback, not a failed search
+        return []
+    return [f["name"] for f in (desc.get("fields") or [])
+            if str(f.get("type") or "").lower() in _TEXT_TYPES
+            or str(f.get("form_type") or "").lower() in _TEXT_TYPES]
+
+
 def _h_search_records(client, *, module, term="", limit=30, fields=None, summary=True) -> Any:
     page = client.records(module).search(term, limit=limit)
-    return project(page, fields=fields, summary=summary)
+    out = project(page, fields=fields, summary=summary)
+    if not term or not isinstance(out, dict) or out.get("total"):
+        return out
+    # $search uses the box's search index, which can miss records (a new or
+    # custom module that is not indexed yet). Retry as a substring match on the
+    # module's text fields, and say which queries ran so a 0 is never silent.
+    ran: dict[str, Any] = {"index_search": {"$search": term, "total": 0}}
+    names = _text_fields(client, module)
+    if names:
+        body = {"logic": "OR", "limit": limit,
+                "filters": [{"field": n, "operator": "like", "value": f"%{term}%"} for n in names]}
+        out = project(client.records(module).query(body), fields=fields, summary=summary)
+        ran["field_match"] = {"query": body, "total": out.get("total", 0) if isinstance(out, dict) else None}
+    else:
+        ran["field_match"] = "skipped: no text fields found for this module"
+    if isinstance(out, dict):
+        out["search"] = ran
+    return out
 
 
 def _h_query_records(
@@ -307,9 +339,32 @@ def _h_whoami(client) -> Any:
     return out
 
 
-def _h_create_user(client, *, loginid, password, firstname, lastname, email, roles, options=None) -> Any:
+def _generate_password(length: int = 20) -> str:
+    """A password that meets FortiSOAR's policy: upper, lower, digit and symbol."""
+    import secrets
+    import string
+
+    symbols = "!@#$%^&*-_=+"
+    pools = (string.ascii_uppercase, string.ascii_lowercase, string.digits, symbols)
+    chars = [secrets.choice(pool) for pool in pools]
+    alphabet = "".join(pools)
+    chars += [secrets.choice(alphabet) for _ in range(length - len(chars))]
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
+
+
+def _h_create_user(client, *, loginid, firstname, lastname, email, roles, password=None, options=None) -> Any:
+    generated = not password
+    if generated:
+        password = _generate_password()
     user, created = client.users.get_or_create(loginid, password, firstname, lastname, email, roles, **(options or {}))
-    return {"user": to_jsonable(user), "created": bool(created)}
+    out: dict[str, Any] = {"user": to_jsonable(user), "created": bool(created)}
+    if generated and created:
+        # Shown once: the box never returns it again. Hand it to the user over a
+        # private channel and have them change it at first login.
+        out["generated_password"] = password
+        out["sensitive"] = ["generated_password"]
+    return out
 
 
 # -- connector install / discovery -------------------------------------------
@@ -799,6 +854,114 @@ def _appliance_transport():
     return transport_from_env()
 
 
+# -- playbook YAML reference ---------------------------------------------------
+_OVERVIEW_SECTIONS = ("Quick orientation", "Top-level shape", "Step types", "Universal step keys")
+
+
+def _authoring_sections() -> list[tuple[int, str, str]]:
+    """(level, heading, body) for each heading of the bundled AUTHORING.md."""
+    from importlib.resources import files
+
+    text = (files("fsr_agentic_toolkit") / "reference" / "AUTHORING.md").read_text(encoding="utf-8")
+    if text.startswith("---"):
+        text = text.split("---", 2)[2]
+    out: list[tuple[int, str, str]] = []
+    in_fence = False
+    level, heading, buf = 0, "", []
+    for line in text.splitlines():
+        if line.startswith("```"):
+            in_fence = not in_fence
+        m = None if in_fence else re.match(r"^(#{2,4}) (.+)$", line)
+        if m:
+            if heading:
+                out.append((level, heading, "\n".join(buf).strip()))
+            level, heading, buf = len(m.group(1)), m.group(2).strip(), [line]
+        else:
+            buf.append(line)
+    if heading:
+        out.append((level, heading, "\n".join(buf).strip()))
+    return out
+
+
+def _section_with_children(sections, i) -> str:
+    level = sections[i][0]
+    parts = [sections[i][2]]
+    for lv, _h, body in sections[i + 1:]:
+        if lv <= level:
+            break
+        parts.append(body)
+    return "\n\n".join(parts)
+
+
+_REFERENCE_PART_CHARS = 2800  # fits the default output cap with the envelope
+
+
+def _parts(text: str) -> list[str]:
+    """Split on blank lines outside code fences into parts under the size budget."""
+    blocks, buf, fence = [], [], False
+    for line in text.splitlines():
+        if line.startswith("```"):
+            fence = not fence
+        if not line.strip() and not fence and buf:
+            blocks.append("\n".join(buf))
+            buf = []
+        else:
+            buf.append(line)
+    if buf:
+        blocks.append("\n".join(buf))
+    parts, cur = [], ""
+    for b in blocks:
+        if cur and len(cur) + len(b) + 2 > _REFERENCE_PART_CHARS:
+            parts.append(cur)
+            cur = b
+        else:
+            cur = f"{cur}\n\n{b}" if cur else b
+    if cur:
+        parts.append(cur)
+    return parts or [""]
+
+
+def _paged(out: dict[str, Any], text: str, part: int) -> dict[str, Any]:
+    chunks = _parts(text)
+    part = max(1, min(int(part or 1), len(chunks)))
+    out["reference"] = chunks[part - 1]
+    out["part"], out["parts"] = part, len(chunks)
+    if part < len(chunks):
+        out["next"] = {"topic": "" if out.get("topic") == "overview" else out["topic"], "part": part + 1}
+    return out
+
+
+def _h_playbook_yaml_reference(client, *, topic="", part=1) -> Any:
+    sections = _authoring_sections()
+    norm = lambda h: re.sub(r"[`/()]", " ", h).lower().split()  # noqa: E731
+    topics = [h for _lv, h, _b in sections]
+    if not topic:
+        body = "\n\n".join(b for _lv, h, b in sections if h in _OVERVIEW_SECTIONS)
+        out = {"topic": "overview", "topics": [h for lv, h, _b in sections if lv == 2],
+               "hint": "Pass topic= a heading or a step type (create_record, decision, for_each, ...)."}
+        return _paged(out, body, part)
+    want = topic.strip().strip("`").lower()
+    hit = next((i for i, (_lv, h, _b) in enumerate(sections) if want in norm(h)), None)
+    if hit is None:
+        hit = next((i for i, (_lv, h, _b) in enumerate(sections) if want in h.lower()), None)
+    out: dict[str, Any] = {"topic": topic}
+    if hit is not None:
+        out["heading"] = sections[hit][1]
+        _paged(out, _section_with_children(sections, hit), part)
+    try:
+        from fsr_playbooks.mcp_server.tools_discovery import _SHORT_TO_CANONICAL, get_step_type
+
+        if want in _SHORT_TO_CANONICAL:
+            step = get_step_type(want)
+            if isinstance(step, dict) and step.get("friendly_form"):
+                out["friendly_form"] = step["friendly_form"]
+    except ImportError:
+        pass
+    if "reference" not in out and "friendly_form" not in out:
+        raise ValueError(f"no reference for {topic!r}; topics: {', '.join(topics)}")
+    return out
+
+
 def _h_appliance_info_identity(client) -> Any:
     from pyfsr.cli.appliance import info
     from pyfsr.cli.appliance.facts import Facts
@@ -813,30 +976,65 @@ def _h_appliance_db_list_databases(client) -> Any:
     return _appliance_json(db.list_databases(Facts(transport=_appliance_transport())))
 
 
-def _h_appliance_db_tables(client, pattern=None, role=None, db_name=None) -> Any:
+def _h_appliance_db_tables(client, pattern=None) -> Any:
     from pyfsr.cli.appliance import db
     from pyfsr.cli.appliance.facts import Facts
 
-    target, headers, rows = db.tables(
-        Facts(transport=_appliance_transport()),
-        pattern,
-        role=role,
-        db=db_name,
-    )
+    # Content DB only: no caller-chosen role or database.
+    target, headers, rows = db.tables(Facts(transport=_appliance_transport()), pattern)
     return {"database": target, "headers": list(headers), "rows": [list(r) for r in rows]}
 
 
-def _h_appliance_db_query(client, sql, role=None, db_name=None) -> Any:
+# Server-side functions that read or write files, reach other servers, signal
+# backends or flip settings. A read-only transaction does not stop all of them.
+_SQL_DENY_RE = re.compile(
+    r"\b(copy|pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|lo_import|lo_export|lo_\w+|"
+    r"dblink\w*|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|set_config|"
+    r"pg_sleep\w*|pg_promote|pg_switch_wal|pg_create_\w+|pg_drop_\w+|"
+    r"insert|update|delete|merge|truncate|drop|alter|create|grant|revoke|vacuum|reindex|cluster|lock|call|do)\b",
+    re.IGNORECASE,
+)
+APPLIANCE_SQL_MAX_ROWS = 1000
+
+
+def _check_read_only_sql(sql: str) -> str:
+    """One plain read statement, or ValueError naming why not."""
+    text = (sql or "").strip().rstrip(";").strip()
+    if not text:
+        raise ValueError("sql is empty")
+    if "\\" in text:
+        raise ValueError("psql meta-commands (backslash) are not allowed")
+    if ";" in text:
+        raise ValueError("one statement only: remove the ';' separators")
+    first = text.split(None, 1)[0].lower()
+    if first not in ("select", "with", "explain", "show", "values", "table"):
+        raise ValueError(f"only read statements are allowed (got {first.upper()})")
+    m = _SQL_DENY_RE.search(text)
+    if m:
+        raise ValueError(f"{m.group(1)!r} is not allowed in an appliance query")
+    return text
+
+
+def _h_appliance_db_query(client, sql) -> Any:
     from pyfsr.cli.appliance import db
     from pyfsr.cli.appliance.facts import Facts
 
-    target, headers, rows = db.query(
-        Facts(transport=_appliance_transport()),
-        sql,
-        role=role,
-        db=db_name,
-    )
-    return {"database": target, "headers": list(headers), "rows": [list(r) for r in rows]}
+    text = _check_read_only_sql(sql)
+
+    class _ReadOnlyFacts(Facts):
+        # The server enforces it too: the session's transaction is read-only,
+        # so a write that slipped past the checks above fails in Postgres.
+        def _psql_env(self) -> dict[str, str]:
+            return {**super()._psql_env(), "PGOPTIONS": "-c default_transaction_read_only=on"}
+
+    facts = _ReadOnlyFacts(transport=_appliance_transport())
+    target, headers, rows = db.query(facts, text)
+    return {
+        "database": target,
+        "headers": list(headers),
+        "rows": [list(r) for r in rows[:APPLIANCE_SQL_MAX_ROWS]],
+        "truncated": len(rows) > APPLIANCE_SQL_MAX_ROWS,
+    }
 
 
 def _h_appliance_db_getsize(client) -> Any:
@@ -882,10 +1080,17 @@ def _h_appliance_license_details(client) -> Any:
     return _appliance_json(license.details(_appliance_transport()))
 
 
+APPLIANCE_LOG_MAX_LINES = 1000
+
+
 def _h_appliance_logs_tail(client, service, lines=100) -> Any:
     from pyfsr.cli.appliance import logs
 
-    return logs.tail(_appliance_transport(), service, lines=lines)
+    # Aliases only: a raw path would let the caller read any file as root.
+    if service not in logs.LOG_PATHS:
+        raise ValueError(f"unknown log {service!r}; one of: {', '.join(logs.LOG_PATHS)}")
+    n = max(1, min(int(lines), APPLIANCE_LOG_MAX_LINES))
+    return logs.tail(_appliance_transport(), service, lines=n)
 
 
 def _h_appliance_ha_nodes(client) -> Any:
@@ -912,10 +1117,15 @@ def _h_appliance_host_meminfo(client) -> Any:
     return _appliance_json(host.meminfo(_appliance_transport()))
 
 
-def _h_appliance_diagnose_run(client, path=None, timeout=120.0) -> Any:
+APPLIANCE_DIAGNOSE_MAX_TIMEOUT = 600.0
+
+
+def _h_appliance_diagnose_run(client, timeout=120.0) -> Any:
     from pyfsr.cli.appliance import diagnose
 
-    return diagnose.run(_appliance_transport(), path=path, timeout=timeout)
+    # Always the fixed on-box script: no caller-chosen path to run as root.
+    t = max(1.0, min(float(timeout), APPLIANCE_DIAGNOSE_MAX_TIMEOUT))
+    return diagnose.run(_appliance_transport(), timeout=t)
 
 
 # --------------------------------------------------------------------------- registry
@@ -1777,7 +1987,11 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _obj(
             {
                 "loginid": {"type": "string", "description": "Login username (unique)."},
-                "password": {"type": "string", "description": "Initial password (create path only)."},
+                "password": {
+                    "type": "string",
+                    "description": "Initial password (create path only). Omit it to have a strong one "
+                    "generated; it is returned once as generated_password.",
+                },
                 "firstname": {"type": "string", "description": "First name."},
                 "lastname": {"type": "string", "description": "Last name."},
                 "email": {"type": "string", "description": "Email address -- the idempotency key."},
@@ -1791,7 +2005,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
                     "description": "Extra create options passed through (access_type, active, department, teams, ...).",
                 },
             },
-            ["loginid", "password", "firstname", "lastname", "email", "roles"],
+            ["loginid", "firstname", "lastname", "email", "roles"],
         ),
         _h_create_user,
         mutating=True,
@@ -1869,6 +2083,17 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     # --- appliance verbs (read-only; SSH/local via PYFSR_APPLIANCE_* env) ---
     ToolSpec(
+        "playbook_yaml_reference",
+        "The playbook YAML authoring reference: top-level shape, step types, universal step "
+        "keys, variables and Jinja, routing, looping, and each step type with examples. "
+        "Without topic: the overview and the list of topics. With topic (a heading or a step "
+        "type such as create_record, decision, manual_input): that section, plus the step's "
+        "accepted YAML keys. Long sections come in parts: follow next. Read this before writing a playbook draft.",
+        _obj({"topic": {"type": "string", "description": "A heading or step type; omit for the overview."},
+              "part": {"type": "integer", "description": "Page of a long section (see parts/next)."}}),
+        _h_playbook_yaml_reference,
+    ),
+    ToolSpec(
         "appliance_info_identity",
         "Appliance identity: version, device UUID, content DB name. Read-only; "
         "reaches the box over SSH (PYFSR_APPLIANCE_* env), not the REST API.",
@@ -1887,16 +2112,15 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _obj(
             {
                 "pattern": {"type": "string", "description": "Optional LIKE pattern (e.g. 'alerts%')."},
-                "role": {"type": "string", "description": "DB role to connect as (default: the content DB role)."},
-                "db_name": {"type": "string", "description": "Target DB name (default: the content DB)."},
             }
         ),
         _h_appliance_db_tables,
     ),
     ToolSpec(
         "appliance_db_query",
-        "Run a read-only SQL query on the appliance content DB. Mutating SQL is "
-        "rejected (use the CLI for writes). Returns {database, headers, rows}.",
+        "Run one read-only SQL statement (SELECT/WITH/EXPLAIN/SHOW) on the appliance content DB, "
+        "inside a read-only transaction. Multiple statements, COPY, backslash commands and "
+        "file/server functions are rejected. At most 1000 rows. Returns {database, headers, rows, truncated}.",
         _obj({"sql": {"type": "string", "description": "SELECT query."}}, ["sql"]),
         _h_appliance_db_query,
     ),
@@ -1944,11 +2168,16 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "appliance_logs_tail",
-        "Tail a service log file. Read-only.",
+        "Tail a FortiSOAR service log by name. Read-only.",
         _obj(
             {
-                "service": {"type": "string", "description": "Service/log name to tail."},
-                "lines": {"type": "integer", "description": "Number of lines (default 100)."},
+                "service": {
+                    "type": "string",
+                    "enum": ["auth", "api", "postman", "integrations", "connectors", "workflow",
+                             "celery", "gateway", "notifier", "nginx"],
+                    "description": "Log name.",
+                },
+                "lines": {"type": "integer", "description": "Number of lines (default 100, max 1000)."},
             },
             ["service"],
         ),
@@ -1983,8 +2212,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         "Run fsr_diagnose.sh on the appliance and return its output. Read-only diagnostic collection.",
         _obj(
             {
-                "path": {"type": "string", "description": "Override the diagnose script path."},
-                "timeout": {"type": "number", "description": "Timeout in seconds (default 120)."},
+                "timeout": {"type": "number", "description": "Timeout in seconds (default 120, max 600)."},
             }
         ),
         _h_appliance_diagnose_run,

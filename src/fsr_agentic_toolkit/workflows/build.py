@@ -28,6 +28,7 @@ def build_playbook(goal: str, yaml_text: str = "", modules: list[str] | None = N
     if not yaml_text:
         run.unknown("no draft yet: write the YAML from the fields above "
                     "(compose_playbook), then call build_playbook again with it")
+        run.next("playbook_yaml_reference()", "the YAML shape and step types to write the draft from", 1)
         run.next("compose_playbook(...)", "draft the playbook", 0)
         return run.result("partial" if facts.findings else "blocked")
 
@@ -48,6 +49,7 @@ def build_playbook(goal: str, yaml_text: str = "", modules: list[str] | None = N
         for fx in fixes[:10]:
             msg = fx.get("message") if isinstance(fx, dict) else str(fx)
             run.finding(f"must fix before pushing: {msg}", [vev], "high")
+        run.next("playbook_yaml_reference(topic=<step type>)", "the accepted keys for the step to fix", 1)
         run.next("build_playbook(goal, yaml_text=<fixed>)", "re-gate the fixed draft", 0)
     run.data["verify"] = {"ready_to_push": ready, "required_fixes": fixes[:10]}
     if blocked_modules or not ready:

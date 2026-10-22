@@ -17,7 +17,7 @@ class _FakeUsers:
         return {"loginid": "analyst", "email": "analyst@example.com"}
 
     def get_or_create(self, loginid, password, firstname, lastname, email, roles, **kwargs):
-        self.created = {"loginid": loginid, "email": email, "roles": roles, "kwargs": kwargs}
+        self.created = {"loginid": loginid, "password": password, "email": email, "roles": roles, "kwargs": kwargs}
         return ({"email": email, "loginid": loginid}, True)
 
 
@@ -419,3 +419,30 @@ def test_compile_playbook_yaml_without_extra_gives_install_hint(client, monkeypa
     monkeypatch.setattr(builtins, "__import__", no_fsr_playbooks)
     out = tools.dispatch(client, "compile_playbook_yaml", {"yaml_text": "name: x"})
     assert "pyfsr[playbooks]" in out["error"]["message"]
+
+
+def test_create_user_generates_password_when_omitted(client):
+    out = tools.dispatch(
+        client,
+        "create_user",
+        {"loginid": "a2", "firstname": "A", "lastname": "B", "email": "a2@example.com",
+         "roles": ["Security Analyst"], "confirm": True},
+    )
+    pw = out["generated_password"]
+    assert pw == client.users.created["password"]
+    assert len(pw) >= 16
+    assert any(c.isupper() for c in pw) and any(c.islower() for c in pw)
+    assert any(c.isdigit() for c in pw) and any(not c.isalnum() for c in pw)
+    assert out["sensitive"] == ["generated_password"]
+    assert "password" not in tools.REGISTRY["create_user"].input_schema["required"]
+
+
+def test_create_user_given_password_is_not_echoed(client):
+    out = tools.dispatch(
+        client,
+        "create_user",
+        {"loginid": "a3", "password": "Given-Pw-123!", "firstname": "A", "lastname": "B",
+         "email": "a3@example.com", "roles": ["Security Analyst"], "confirm": True},
+    )
+    assert "generated_password" not in out
+    assert "Given-Pw-123!" not in str(out)

@@ -295,3 +295,9 @@ def test_build_without_the_module_on_the_box_is_not_ready(box):
     build = build_playbook("plan the job", HEIST_YAML, modules=[])
     assert not build.data["verify"]["ready_to_push"]
     assert any("heists" in f.claim for f in build.findings)
+    assert any(n.action.startswith("playbook_yaml_reference") for n in build.next)
+
+
+def test_build_without_a_draft_points_at_the_yaml_reference(box):
+    build = build_playbook("plan the job", modules=["heists"])
+    assert any(n.action == "playbook_yaml_reference()" for n in build.next)
