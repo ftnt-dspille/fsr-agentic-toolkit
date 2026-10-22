@@ -10,11 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-  # Placeholders: set at release to the pyfsr release carrying the SDK fixes
-  # (env beats registry, publish progress) and the fsr-playbooks release
-  # carrying the toolkit-move hooks (set_live_client, withhold_from_model).
-  "pyfsr>=0.8.0",
-  "fsr-playbooks>=0.0.0",
+  "pyfsr>=0.27.0",
+  "fsr-playbooks>=0.8.0",
   "mcp>=2.0,<3",
   "pydantic>=2",
 ]
