@@ -94,8 +94,6 @@ def test_destructive_tools_are_exactly_the_documented_set():
         "install_connector",
         # the one tier-3 workflow: writes schema, publishes, grants a role
         "provision_module",
-        # raw SQL as the DB superuser; a regex cannot make it safe
-        "appliance_db_query",
     }
 
 
@@ -158,9 +156,9 @@ def test_allow_globs_narrow_the_surface(monkeypatch, client):
 
 
 def test_deny_globs_hide_tools(monkeypatch, client):
-    monkeypatch.setenv("FSR_MCP_DENY_TOOLS", "appliance_*,delete_*")
+    monkeypatch.setenv("FSR_MCP_DENY_TOOLS", "schedule_*,delete_*")
     names = {t["name"] for t in tools.tool_schemas()}
-    assert not any(n.startswith("appliance_") or n.startswith("delete_") for n in names)
+    assert not any(n.startswith("schedule_") or n.startswith("delete_") for n in names)
     out = tools.dispatch(client, "delete_record", {"module": "alerts", "ref": "u1", "confirm": True})
     assert out["error"]["type"] == "ToolDisabled"
 
@@ -448,3 +446,12 @@ def test_create_user_given_password_is_not_echoed(client):
     )
     assert "generated_password" not in out
     assert "Given-Pw-123!" not in str(out)
+
+
+def test_api_only_no_appliance_shell_tools():
+    """The toolkit reaches FortiSOAR through its API only; shell tools are a human CLI."""
+    import inspect
+
+    names = {t.name for t in tools.list_tools()}
+    assert not {n for n in names if n.startswith("appliance_")}
+    assert "pyfsr.cli.appliance" not in inspect.getsource(tools)

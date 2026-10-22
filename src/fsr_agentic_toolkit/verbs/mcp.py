@@ -7,7 +7,7 @@ Point an MCP-capable agent at *any* FortiSOAR with one command::
 This is a deliberately thin, generic consumer of :mod:`fsr_agentic_toolkit.verbs.tools`: it
 exposes the full tool registry (record CRUD, schema + module admin, picklists,
 connectors incl. install and live operation listing, playbook runs and YAML
-publishing, users, audit, AI investigation, read-only appliance verbs) as MCP
+publishing, users, audit, AI investigation, the workflows) as MCP
 tools, listing them from :func:`fsr_agentic_toolkit.verbs.tools.tool_schemas` and executing
 them through :func:`fsr_agentic_toolkit.verbs.tools.dispatch`. It is intentionally distinct
 from fsrpb's authoring/domain MCP and the connector's on-platform MCP — no
@@ -40,11 +40,8 @@ Configuration is read from the environment (see :func:`client_from_env`):
 - ``FSR_VERIFY_SSL`` — ``false``/``0``/``no`` to disable TLS verification.
 - ``FSR_SUPPRESS_INSECURE_WARNINGS`` — silence urllib3 warnings when SSL is off.
 
-The ``appliance_*`` tools reach the box over SSH (not the REST API), so they
-read a separate set of vars via :func:`pyfsr.cli.appliance.transport.transport_from_env`:
-``PYFSR_APPLIANCE_HOST``/``USER``/``PASSWORD``/``PORT``/``KEY_PATH``/
-``SUDO_PASSWORD``/``INSECURE_SKIP_HOST_KEY_CHECK``. On-box (``/opt/cyops``
-present) the local transport is used and only the sudo password is needed.
+The server talks to FortiSOAR through its REST API only. Appliance shell
+tools (diagnose, logs, DB, services) are a human CLI: ``pyfsr appliance ...``.
 """
 
 from __future__ import annotations

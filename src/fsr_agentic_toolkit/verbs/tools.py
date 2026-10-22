@@ -34,10 +34,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from pydantic import BaseModel
 
 from pyfsr.exceptions import FortiSOARException, PicklistResolutionError
 from pyfsr.projection import project, to_jsonable
@@ -826,34 +824,6 @@ def _h_audit_activities(
     return {"total": len(items), "activities": to_jsonable(items[:limit])}
 
 
-# ------------------------------------------------------------------ appliance verbs
-#
-# Read-only `pyfsr appliance` verbs surfaced to an agent. These reach the box over
-# SSH (or locally when on-box), NOT the REST API, so `client` (the REST FortiSOAR
-# client passed by dispatch) is unused -- each handler builds its own Transport via
-# transport_from_env() (PYFSR_APPLIANCE_* env vars). Mutating verbs (db write,
-# service restart/stop, mq purge, cert regenerate) are intentionally omitted from
-# this first cut.
-
-
-def _appliance_json(obj: Any) -> Any:
-    """Coerce an appliance-verb result (pydantic model / dataclass / list / tuple) to a
-    JSON-serializable value. ``model_dump``/``asdict`` recurse into nested records."""
-    if isinstance(obj, BaseModel):
-        return obj.model_dump()
-    if is_dataclass(obj) and not isinstance(obj, type):
-        return asdict(obj)
-    if isinstance(obj, list):
-        return [_appliance_json(x) for x in obj]
-    return obj
-
-
-def _appliance_transport():
-    from pyfsr.cli.appliance.transport import transport_from_env
-
-    return transport_from_env()
-
-
 # -- playbook YAML reference ---------------------------------------------------
 _OVERVIEW_SECTIONS = ("Quick orientation", "Top-level shape", "Step types", "Universal step keys")
 
@@ -960,179 +930,6 @@ def _h_playbook_yaml_reference(client, *, topic="", part=1) -> Any:
     if "reference" not in out and "friendly_form" not in out:
         raise ValueError(f"no reference for {topic!r}; topics: {', '.join(topics)}")
     return out
-
-
-def _h_appliance_info_identity(client) -> Any:
-    from pyfsr.cli.appliance import info
-    from pyfsr.cli.appliance.facts import Facts
-
-    return info.identity(Facts(transport=_appliance_transport()))
-
-
-def _h_appliance_db_list_databases(client) -> Any:
-    from pyfsr.cli.appliance import db
-    from pyfsr.cli.appliance.facts import Facts
-
-    return _appliance_json(db.list_databases(Facts(transport=_appliance_transport())))
-
-
-def _h_appliance_db_tables(client, pattern=None) -> Any:
-    from pyfsr.cli.appliance import db
-    from pyfsr.cli.appliance.facts import Facts
-
-    # Content DB only: no caller-chosen role or database.
-    target, headers, rows = db.tables(Facts(transport=_appliance_transport()), pattern)
-    return {"database": target, "headers": list(headers), "rows": [list(r) for r in rows]}
-
-
-# Defense in depth only, NOT the control: a regex cannot parse SQL (U&
-# identifiers, query_to_xml-style executors and string concatenation get past
-# a denylist). The controls are the tier-3 gate (a human approves each call),
-# the read-only transaction and the statement timeout. No SQL parser (pglast)
-# is a dependency today; follow-up: a dedicated SELECT-only Postgres role.
-_SQL_DENY_RE = re.compile(
-    r"(?:\bu&|\b(?:query_to_xml\w*|table_to_xml\w*|cursor_to_xml\w*|xpath\w*|query_to_json\w*|"
-    r"format|concat\w*|chr|convert_from|decode|encode|current_setting|pg_\w*file\w*|"
-    r"copy|pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|lo_import|lo_export|lo_\w+|"
-    r"dblink\w*|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|set_config|"
-    r"pg_sleep\w*|pg_promote|pg_switch_wal|pg_create_\w+|pg_drop_\w+|"
-    r"insert|update|delete|merge|truncate|drop|alter|create|grant|revoke|vacuum|reindex|cluster|lock|call|do)\b)",
-    re.IGNORECASE,
-)
-APPLIANCE_SQL_MAX_ROWS = 1000
-APPLIANCE_SQL_TIMEOUT_MS = 15000
-
-
-def _check_read_only_sql(sql: str) -> str:
-    """One plain read statement, or ValueError naming why not."""
-    text = (sql or "").strip().rstrip(";").strip()
-    if not text:
-        raise ValueError("sql is empty")
-    if "\\" in text:
-        raise ValueError("psql meta-commands (backslash) are not allowed")
-    if ";" in text:
-        raise ValueError("one statement only: remove the ';' separators")
-    first = text.split(None, 1)[0].lower()
-    if first not in ("select", "with", "explain", "show", "values", "table"):
-        raise ValueError(f"only read statements are allowed (got {first.upper()})")
-    m = _SQL_DENY_RE.search(text)
-    if m:
-        raise ValueError(f"{m.group(0).strip()!r} is not allowed in an appliance query")
-    return text
-
-
-def _h_appliance_db_query(client, sql) -> Any:
-    from pyfsr.cli.appliance import db
-    from pyfsr.cli.appliance.facts import Facts
-
-    text = _check_read_only_sql(sql)
-
-    class _ReadOnlyFacts(Facts):
-        # The server enforces it too: the session's transaction is read-only,
-        # so a write that slipped past the checks above fails in Postgres.
-        def _psql_env(self) -> dict[str, str]:
-            return {**super()._psql_env(),
-                    "PGOPTIONS": f"-c default_transaction_read_only=on -c statement_timeout={APPLIANCE_SQL_TIMEOUT_MS}"}
-
-    facts = _ReadOnlyFacts(transport=_appliance_transport())
-    target, headers, rows = db.query(facts, text)
-    return {
-        "database": target,
-        "headers": list(headers),
-        "rows": [list(r) for r in rows[:APPLIANCE_SQL_MAX_ROWS]],
-        "truncated": len(rows) > APPLIANCE_SQL_MAX_ROWS,
-    }
-
-
-def _h_appliance_db_getsize(client) -> Any:
-    from pyfsr.cli.appliance import db
-    from pyfsr.cli.appliance.facts import Facts
-
-    return _appliance_json(db.getsize(Facts(transport=_appliance_transport())))
-
-
-def _h_appliance_service_status(client, name=None) -> Any:
-    from pyfsr.cli.appliance import service
-
-    return service.status(_appliance_transport(), name)
-
-
-def _h_appliance_service_list(client, name=None) -> Any:
-    from pyfsr.cli.appliance import service
-
-    return _appliance_json(service.services(_appliance_transport(), name))
-
-
-def _h_appliance_mq_status(client) -> Any:
-    from pyfsr.cli.appliance import mq
-
-    return mq.status(_appliance_transport())
-
-
-def _h_appliance_mq_queues(client) -> Any:
-    from pyfsr.cli.appliance import mq
-
-    return _appliance_json(mq.queues(_appliance_transport()))
-
-
-def _h_appliance_license_show(client) -> Any:
-    from pyfsr.cli.appliance import license
-
-    return license.show(_appliance_transport())
-
-
-def _h_appliance_license_details(client) -> Any:
-    from pyfsr.cli.appliance import license
-
-    return _appliance_json(license.details(_appliance_transport()))
-
-
-APPLIANCE_LOG_MAX_LINES = 1000
-
-
-def _h_appliance_logs_tail(client, service, lines=100) -> Any:
-    from pyfsr.cli.appliance import logs
-
-    # Aliases only: a raw path would let the caller read any file as root.
-    if service not in logs.LOG_PATHS:
-        raise ValueError(f"unknown log {service!r}; one of: {', '.join(logs.LOG_PATHS)}")
-    n = max(1, min(int(lines), APPLIANCE_LOG_MAX_LINES))
-    return logs.tail(_appliance_transport(), service, lines=n)
-
-
-def _h_appliance_ha_nodes(client) -> Any:
-    from pyfsr.cli.appliance import ha
-
-    return _appliance_json(ha.nodes(_appliance_transport()))
-
-
-def _h_appliance_ha_health(client) -> Any:
-    from pyfsr.cli.appliance import ha
-
-    return _appliance_json(ha.health(_appliance_transport()))
-
-
-def _h_appliance_host_snapshot(client) -> Any:
-    from pyfsr.cli.appliance import host
-
-    return _appliance_json(host.snapshot(_appliance_transport()))
-
-
-def _h_appliance_host_meminfo(client) -> Any:
-    from pyfsr.cli.appliance import host
-
-    return _appliance_json(host.meminfo(_appliance_transport()))
-
-
-APPLIANCE_DIAGNOSE_MAX_TIMEOUT = 600.0
-
-
-def _h_appliance_diagnose_run(client, timeout=120.0) -> Any:
-    from pyfsr.cli.appliance import diagnose
-
-    # Always the fixed on-box script: no caller-chosen path to run as root.
-    t = max(1.0, min(float(timeout), APPLIANCE_DIAGNOSE_MAX_TIMEOUT))
-    return diagnose.run(_appliance_transport(), timeout=t)
 
 
 # --------------------------------------------------------------------------- registry
@@ -2088,7 +1885,6 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _h_publish_playbook,
         mutating=True,
     ),
-    # --- appliance verbs (read-only; SSH/local via PYFSR_APPLIANCE_* env) ---
     ToolSpec(
         "playbook_yaml_reference",
         "The playbook YAML authoring reference: top-level shape, step types, universal step "
@@ -2099,134 +1895,6 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _obj({"topic": {"type": "string", "description": "A heading or step type; omit for the overview."},
               "part": {"type": "integer", "description": "Page of a long section (see parts/next)."}}),
         _h_playbook_yaml_reference,
-    ),
-    ToolSpec(
-        "appliance_info_identity",
-        "Appliance identity: version, device UUID, content DB name. Read-only; "
-        "reaches the box over SSH (PYFSR_APPLIANCE_* env), not the REST API.",
-        _obj({}),
-        _h_appliance_info_identity,
-    ),
-    ToolSpec(
-        "appliance_db_list_databases",
-        "List Postgres databases on the appliance (csadm db). Read-only.",
-        _obj({}),
-        _h_appliance_db_list_databases,
-    ),
-    ToolSpec(
-        "appliance_db_tables",
-        "List tables in the content DB (optionally name-filtered). Read-only.",
-        _obj(
-            {
-                "pattern": {"type": "string", "description": "Optional LIKE pattern (e.g. 'alerts%')."},
-            }
-        ),
-        _h_appliance_db_tables,
-    ),
-    ToolSpec(
-        "appliance_db_query",
-        "Run one read-only SQL statement (SELECT/WITH/EXPLAIN/SHOW) on the appliance content DB, "
-        "inside a read-only transaction. Multiple statements, COPY, backslash commands and "
-        "file/server functions are rejected. Needs confirm: true (approved per call). At most 1000 rows. Returns {database, headers, rows, truncated}.",
-        _obj({"sql": {"type": "string", "description": "SELECT query."}}, ["sql"]),
-        _h_appliance_db_query,
-        # Raw SQL as the DB superuser: a human approves each call, and
-        # read-only mode drops it.
-        mutating=True,
-        destructive=True,
-    ),
-    ToolSpec(
-        "appliance_db_getsize",
-        "Per-data-class table sizes on the appliance (csadm db --getsize). Read-only.",
-        _obj({}),
-        _h_appliance_db_getsize,
-    ),
-    ToolSpec(
-        "appliance_service_status",
-        "Raw csadm services --status output (optionally filtered to one service name client-side). Read-only.",
-        _obj({"name": {"type": "string", "description": "Optional service name to filter lines to."}}),
-        _h_appliance_service_status,
-    ),
-    ToolSpec(
-        "appliance_service_list",
-        "Typed service states (name, running, status, since). Read-only.",
-        _obj({"name": {"type": "string", "description": "Optional service name to filter to."}}),
-        _h_appliance_service_list,
-    ),
-    ToolSpec(
-        "appliance_mq_status",
-        "Raw rabbitmqctl status output. Read-only.",
-        _obj({}),
-        _h_appliance_mq_status,
-    ),
-    ToolSpec(
-        "appliance_mq_queues",
-        "RabbitMQ queues (name, messages, consumers). Read-only.",
-        _obj({}),
-        _h_appliance_mq_queues,
-    ),
-    ToolSpec(
-        "appliance_license_show",
-        "Raw csadm license --show-details output. Read-only.",
-        _obj({}),
-        _h_appliance_license_show,
-    ),
-    ToolSpec(
-        "appliance_license_details",
-        "Parsed license details (serial, tier, entitlements, expiry). Read-only.",
-        _obj({}),
-        _h_appliance_license_details,
-    ),
-    ToolSpec(
-        "appliance_logs_tail",
-        "Tail a FortiSOAR service log by name. Read-only.",
-        _obj(
-            {
-                "service": {
-                    "type": "string",
-                    "enum": ["auth", "api", "postman", "integrations", "connectors", "workflow",
-                             "celery", "gateway", "notifier", "nginx"],
-                    "description": "Log name.",
-                },
-                "lines": {"type": "integer", "description": "Number of lines (default 100, max 1000)."},
-            },
-            ["service"],
-        ),
-        _h_appliance_logs_tail,
-    ),
-    ToolSpec(
-        "appliance_ha_nodes",
-        "HA cluster node list. Read-only.",
-        _obj({}),
-        _h_appliance_ha_nodes,
-    ),
-    ToolSpec(
-        "appliance_ha_health",
-        "HA cluster health summary. Read-only.",
-        _obj({}),
-        _h_appliance_ha_health,
-    ),
-    ToolSpec(
-        "appliance_host_snapshot",
-        "One coherent sample of mem/swap/load/process RSS/disk. Read-only.",
-        _obj({}),
-        _h_appliance_host_snapshot,
-    ),
-    ToolSpec(
-        "appliance_host_meminfo",
-        "Memory usage (mem/swap). Read-only.",
-        _obj({}),
-        _h_appliance_host_meminfo,
-    ),
-    ToolSpec(
-        "appliance_diagnose_run",
-        "Run fsr_diagnose.sh on the appliance and return its output. Read-only diagnostic collection.",
-        _obj(
-            {
-                "timeout": {"type": "number", "description": "Timeout in seconds (default 120, max 600)."},
-            }
-        ),
-        _h_appliance_diagnose_run,
     ),
 )
 

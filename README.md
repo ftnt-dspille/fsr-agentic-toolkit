@@ -34,6 +34,12 @@ steps with their tier, and an id that a follow-up workflow can take.
 Use cases compose them. A custom module plus a playbook that acts on it is
 `provision_module`, then `build_playbook`, then `verify_effect`.
 
+## API only
+
+The toolkit talks to FortiSOAR through its REST API and nothing else. It has
+no SSH, shell, log or database tools. Appliance shell tools are a human CLI:
+`pyfsr appliance ...`.
+
 ## Safety
 
 Every call goes through one gate. Writes are tier 2. Destructive tools are
