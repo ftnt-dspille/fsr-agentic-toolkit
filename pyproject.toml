@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fsr-agentic-toolkit"
+version = "0.1.0"
+description = "The agent layer for FortiSOAR: evidence-backed workflows, one gate, one MCP server and CLI, on pyfsr and fsr-playbooks."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  # Placeholders: set at release to the pyfsr release carrying the SDK fixes
+  # (env beats registry, publish progress) and the fsr-playbooks release
+  # carrying the toolkit-move hooks (set_live_client, withhold_from_model).
+  "pyfsr>=0.8.0",
+  "fsr-playbooks>=0.0.0",
+  "mcp>=2.0,<3",
+  "pydantic>=2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+fsr-agentic-toolkit = "fsr_agentic_toolkit.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fsr_agentic_toolkit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["requires_extra(name): needs an optional dependency (mcp is a core dependency here)"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
