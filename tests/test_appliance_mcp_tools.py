@@ -121,7 +121,7 @@ def test_appliance_db_tables_returns_rows(scripted_transport):
 
 def test_appliance_db_query_rejects_write(scripted_transport):
     scripted_transport({"db": ""})
-    out = _dispatch("appliance_db_query", {"sql": "DELETE FROM alerts"})
+    out = _dispatch("appliance_db_query", {"sql": "DELETE FROM alerts", "confirm": True})
     assert out["error"]["type"] == "ValueError"
 
 
@@ -235,21 +235,35 @@ def test_logs_tail_enum_matches_aliases():
         "SELECT * FROM dblink('host=x', 'select 1') AS t(a int)",
         "SELECT set_config('default_transaction_read_only','off',false)",
         "WITH d AS (DELETE FROM alerts RETURNING *) SELECT * FROM d",
+        'SELECT * FROM U&"\\0070g_shadow"',
+        "SELECT * FROM U&\"!0070g_shadow\" UESCAPE '!'",
+        "SELECT query_to_xml('DELETE FROM alerts RETURNING 1', true, false, '')",
+        "SELECT query_to_xml('dele' || 'te from alerts', true, false, '')",
     ],
 )
 def test_db_query_rejects_unsafe_sql(recording, sql):
-    out = _dispatch("appliance_db_query", {"sql": sql})
+    out = _dispatch("appliance_db_query", {"sql": sql, "confirm": True})
     assert "error" in out, sql
     assert not any(c.startswith("psql") and "alerts" in c for c in _ran(recording))
 
 
 def test_db_query_runs_read_only_on_content_db(recording):
-    out = _dispatch("appliance_db_query", {"sql": "SELECT count(*) FROM alerts"})
+    out = _dispatch("appliance_db_query", {"sql": "SELECT count(*) FROM alerts", "confirm": True})
     psql = [(a, env) for a, env in recording.calls if a[0] == "psql" and "count(*)" in " ".join(a)]
     assert psql, out
     argv, env = psql[0]
     assert "default_transaction_read_only=on" in env.get("PGOPTIONS", "")
+    assert "statement_timeout=" in env.get("PGOPTIONS", "")
     assert "postgres" not in argv[argv.index("-d") + 1]
     props = tools.REGISTRY["appliance_db_query"].input_schema["properties"]
     assert set(props) == {"sql"}
     assert "role" not in tools.REGISTRY["appliance_db_tables"].input_schema["properties"]
+
+
+def test_db_query_needs_approval_and_is_dropped_read_only(recording, monkeypatch):
+    out = _dispatch("appliance_db_query", {"sql": "SELECT 1"})
+    assert out["error"]["type"] == "confirmation_required"
+    assert not any(c.startswith("psql") for c in _ran(recording))
+    assert tools.REGISTRY["appliance_db_query"].tier == 3
+    monkeypatch.setenv("FSR_MCP_READONLY", "1")
+    assert "appliance_db_query" not in {s.name for s in tools.enabled_tools()}

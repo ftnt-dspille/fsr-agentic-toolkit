@@ -94,6 +94,8 @@ def test_destructive_tools_are_exactly_the_documented_set():
         "install_connector",
         # the one tier-3 workflow: writes schema, publishes, grants a role
         "provision_module",
+        # raw SQL as the DB superuser; a regex cannot make it safe
+        "appliance_db_query",
     }
 
 

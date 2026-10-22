@@ -985,16 +985,22 @@ def _h_appliance_db_tables(client, pattern=None) -> Any:
     return {"database": target, "headers": list(headers), "rows": [list(r) for r in rows]}
 
 
-# Server-side functions that read or write files, reach other servers, signal
-# backends or flip settings. A read-only transaction does not stop all of them.
+# Defense in depth only, NOT the control: a regex cannot parse SQL (U&
+# identifiers, query_to_xml-style executors and string concatenation get past
+# a denylist). The controls are the tier-3 gate (a human approves each call),
+# the read-only transaction and the statement timeout. No SQL parser (pglast)
+# is a dependency today; follow-up: a dedicated SELECT-only Postgres role.
 _SQL_DENY_RE = re.compile(
-    r"\b(copy|pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|lo_import|lo_export|lo_\w+|"
+    r"(?:\bu&|\b(?:query_to_xml\w*|table_to_xml\w*|cursor_to_xml\w*|xpath\w*|query_to_json\w*|"
+    r"format|concat\w*|chr|convert_from|decode|encode|current_setting|pg_\w*file\w*|"
+    r"copy|pg_read_file|pg_read_binary_file|pg_ls_dir|pg_stat_file|lo_import|lo_export|lo_\w+|"
     r"dblink\w*|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|set_config|"
     r"pg_sleep\w*|pg_promote|pg_switch_wal|pg_create_\w+|pg_drop_\w+|"
-    r"insert|update|delete|merge|truncate|drop|alter|create|grant|revoke|vacuum|reindex|cluster|lock|call|do)\b",
+    r"insert|update|delete|merge|truncate|drop|alter|create|grant|revoke|vacuum|reindex|cluster|lock|call|do)\b)",
     re.IGNORECASE,
 )
 APPLIANCE_SQL_MAX_ROWS = 1000
+APPLIANCE_SQL_TIMEOUT_MS = 15000
 
 
 def _check_read_only_sql(sql: str) -> str:
@@ -1011,7 +1017,7 @@ def _check_read_only_sql(sql: str) -> str:
         raise ValueError(f"only read statements are allowed (got {first.upper()})")
     m = _SQL_DENY_RE.search(text)
     if m:
-        raise ValueError(f"{m.group(1)!r} is not allowed in an appliance query")
+        raise ValueError(f"{m.group(0).strip()!r} is not allowed in an appliance query")
     return text
 
 
@@ -1025,7 +1031,8 @@ def _h_appliance_db_query(client, sql) -> Any:
         # The server enforces it too: the session's transaction is read-only,
         # so a write that slipped past the checks above fails in Postgres.
         def _psql_env(self) -> dict[str, str]:
-            return {**super()._psql_env(), "PGOPTIONS": "-c default_transaction_read_only=on"}
+            return {**super()._psql_env(),
+                    "PGOPTIONS": f"-c default_transaction_read_only=on -c statement_timeout={APPLIANCE_SQL_TIMEOUT_MS}"}
 
     facts = _ReadOnlyFacts(transport=_appliance_transport())
     target, headers, rows = db.query(facts, text)
@@ -2120,9 +2127,13 @@ _TOOLS: tuple[ToolSpec, ...] = (
         "appliance_db_query",
         "Run one read-only SQL statement (SELECT/WITH/EXPLAIN/SHOW) on the appliance content DB, "
         "inside a read-only transaction. Multiple statements, COPY, backslash commands and "
-        "file/server functions are rejected. At most 1000 rows. Returns {database, headers, rows, truncated}.",
+        "file/server functions are rejected. Needs confirm: true (approved per call). At most 1000 rows. Returns {database, headers, rows, truncated}.",
         _obj({"sql": {"type": "string", "description": "SELECT query."}}, ["sql"]),
         _h_appliance_db_query,
+        # Raw SQL as the DB superuser: a human approves each call, and
+        # read-only mode drops it.
+        mutating=True,
+        destructive=True,
     ),
     ToolSpec(
         "appliance_db_getsize",
