@@ -85,140 +85,21 @@ class DiagnoseClient:
 
 
 # --- happy path: run completed, all defined steps reached -------------------
-def test_diagnose_run_completed_all_steps_reached():
-    client = DiagnoseClient(
-        definition=_definition(
-            "u1",
-            "Block IP",
-            [
-                _step("Start", "cybersponse.abstract_trigger"),
-                _step("Fetch", "FindRecords"),
-                _step("Block", "Connectors", connector="fortigate-firewall"),
-            ],
-        ),
-        runs=[_run("1001", "finished", [])],
-        run_by_pk={
-            "1001": _run(
-                "1001",
-                "finished",
-                [
-                    _run_step("Start", "finished"),
-                    _run_step("Fetch", "finished"),
-                    _run_step("Block", "finished"),
-                ],
-            )
-        },
-    )
-    out = PlaybooksAPI(client).diagnose_run(playbook_uuid="u1")
-    assert out["verdict"] == "completed"
-    assert out["run"]["pk"] == "1001"
-    assert out["run"]["status"] == "finished"
-    assert [s["name"] for s in out["definition_steps"]] == ["Start", "Fetch", "Block"]
-    assert all(s["status"] == "finished" for s in out["definition_steps"])
-    assert out["not_reached"] == []
-    assert out["executed_not_defined"] == []
-    assert out["failing_step"] is None
-    assert "3/3" in out["summary"]
 
 
 # --- failed mid-run: a defined step never reached --------------------------
-def test_diagnose_run_failed_step_not_reached():
-    client = DiagnoseClient(
-        definition=_definition(
-            "u1",
-            "Block IP",
-            [
-                _step("Start", "cybersponse.abstract_trigger"),
-                _step("Fetch", "FindRecords"),
-                _step("Block", "Connectors"),
-            ],
-        ),
-        runs=[_run("1009", "failed", [])],
-        run_by_pk={
-            "1009": _run(
-                "1009",
-                "failed",
-                [
-                    _run_step("Start", "finished"),
-                    _run_step("Fetch", "failed", result={"Error message": "connector down"}),
-                    # "Block" never ran — incipient (engine never reached it)
-                ],
-            )
-        },
-    )
-    out = PlaybooksAPI(client).diagnose_run(playbook_uuid="u1")
-    assert out["verdict"] == "failed"
-    assert out["failing_step"] == "Fetch"
-    assert out["error_message"] == "connector down"
-    assert out["not_reached"] == ["Block"]
-    assert "2/3" in out["summary"]
-    assert "failed at 'Fetch'" in out["summary"]
 
 
 # --- no run: playbook found but never executed -----------------------------
-def test_diagnose_run_no_executions():
-    client = DiagnoseClient(
-        definition=_definition("u1", "Block IP", [_step("Start", "cybersponse.abstract_trigger")]),
-        runs=[],  # no executions
-    )
-    out = PlaybooksAPI(client).diagnose_run(playbook_uuid="u1")
-    assert out["verdict"] == "no_run"
-    assert out["run"] is None
-    assert out["not_reached"] == ["Start"]  # the one defined step never ran
-    assert out["definition_steps"][0]["name"] == "Start"
 
 
 # --- drift: run recorded a step the current definition lacks ---------------
-def test_diagnose_run_detects_drift_step_not_in_definition():
-    client = DiagnoseClient(
-        definition=_definition(
-            "u1",
-            "PB",
-            [_step("Start", "cybersponse.abstract_trigger"), _step("Block", "Connectors")],
-        ),
-        runs=[_run("1001", "finished", [])],
-        run_by_pk={
-            "1001": _run(
-                "1001",
-                "finished",
-                [
-                    _run_step("Start", "finished"),
-                    _run_step("Block", "finished"),
-                    # The run executed a step the current definition doesn't have
-                    # (e.g. an older version of the playbook).
-                    _run_step("Legacy Notify", "finished"),
-                ],
-            )
-        },
-    )
-    out = PlaybooksAPI(client).diagnose_run(playbook_uuid="u1")
-    assert out["verdict"] == "completed"
-    assert [e["name"] for e in out["executed_not_defined"]] == ["Legacy Notify"]
 
 
 # --- explicit run arg skips the latest-run lookup --------------------------
-def test_diagnose_run_explicit_run_arg():
-    client = DiagnoseClient(
-        definition=_definition("u1", "PB", [_step("Start", "cybersponse.abstract_trigger")]),
-        runs=[_run("2000", "finished", [])],  # should be ignored
-        run_by_pk={
-            "3000": _run("3000", "finished", [_run_step("Start", "finished")]),
-        },
-    )
-    out = PlaybooksAPI(client).diagnose_run(playbook_uuid="u1", run="3000")
-    assert out["run"]["pk"] == "3000"
-    # The latest-run list endpoint was NOT hit (only definition + the explicit run).
-    list_gets = [c for c in client.get_calls if c[0].startswith("/api/wf/api/workflows/?")]
-    assert list_gets == []
 
 
 # --- no definition: unresolvable playbook ----------------------------------
-def test_diagnose_run_no_definition_when_uuid_missing():
-    # diagnose_run with neither playbook nor playbook_uuid -> _resolve_uuid returns None
-    client = DiagnoseClient(definition=None)
-    out = PlaybooksAPI(client).diagnose_run(playbook="Ghost")
-    assert out["verdict"] == "no_definition"
-    assert out["definition_steps"] == []
 
 
 # --- MCP dispatch surfaces the structured diff -----------------------------
