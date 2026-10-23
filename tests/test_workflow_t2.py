@@ -10,8 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from fsr_playbooks.mcp_server import _shared
+
 from fsr_agentic_toolkit.workflows import MemoryResultStore, set_result_store
 from fsr_agentic_toolkit.workflows import debug as D
 from fsr_agentic_toolkit.workflows import orient as O
@@ -176,8 +176,8 @@ def test_provision_waits_out_a_publish_in_flight_and_reports_it(box, monkeypatch
     r = provision_module("heists", label="Heist", fields=HEIST_FIELDS)
     assert r.status == "answered", r.findings
     waited = [f.claim for f in r.findings if f.claim.startswith("waited out")]
-    assert waited == ["waited out a publish already in progress: Generating Models -> "
-                      "Clearing Cache -> Cleaning Up Old Backups -> Encrypt Database"]
+    assert waited == [("waited out a publish already in progress: Generating Models -> "
+                      "Clearing Cache -> Cleaning Up Old Backups -> Encrypt Database")]
     assert box.published_calls == 1
 
 

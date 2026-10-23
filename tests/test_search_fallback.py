@@ -1,8 +1,9 @@
 """search_records: an empty index search falls back to a field match and says what ran."""
 from __future__ import annotations
 
-from fsr_agentic_toolkit.verbs import tools
 from pyfsr.pagination import HydraPage
+
+from fsr_agentic_toolkit.verbs import tools
 
 
 def _page(members):

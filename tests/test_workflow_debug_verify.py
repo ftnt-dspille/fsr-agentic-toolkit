@@ -7,11 +7,11 @@ reads are fakes shaped like recorded live responses.
 from __future__ import annotations
 
 import pytest
-
 from fsr_playbooks.mcp_server import _shared
+from fsr_playbooks.run_failure import failure_of
+
 from fsr_agentic_toolkit.workflows import MemoryResultStore, load_follow_up, set_result_store
 from fsr_agentic_toolkit.workflows import debug as D
-from fsr_playbooks.run_failure import failure_of
 from fsr_agentic_toolkit.workflows.verify import verify_effect
 
 _IRI = "/api/3/alerts/1daad405-3999-4682-ba60-586bec063d25"
@@ -188,8 +188,9 @@ def test_verify_effect_needs_a_target():
 
 
 def test_workflow_tools_register_into_the_framework_read_only():
-    from fsr_agentic_toolkit.workflow_tools import register_into_framework
     from fsr_playbooks.llm.tools import REGISTRY
+
+    from fsr_agentic_toolkit.workflow_tools import register_into_framework
     register_into_framework()
     for n in ("debug_run", "verify_effect"):
         assert REGISTRY[n].tier == 1 and REGISTRY[n].confirm_mode == "auto"
@@ -198,9 +199,10 @@ def test_workflow_tools_register_into_the_framework_read_only():
 
 
 def test_workflows_are_offered_to_the_model_only_when_a_host_opts_in():
-    from fsr_agentic_toolkit.workflow_tools import register_into_framework
     from fsr_playbooks.llm import tools as T
-    names = lambda: {t["name"] for t in T.anthropic_tools()}  # noqa: E731
+
+    from fsr_agentic_toolkit.workflow_tools import register_into_framework
+    names = lambda: {t["name"] for t in T.anthropic_tools()}
     register_into_framework()
     assert "debug_run" not in names()
     register_into_framework(offer_to_model=True)

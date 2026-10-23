@@ -35,10 +35,7 @@ from .store import ArchetypeStore
 # Function words that carry no use-case signal; dropped before scoring so they neither
 # inflate a match (common words coinciding) nor dilute the recall denominator.
 _STOPWORDS = frozenset(
-    """
-    a an the of to in on for with by from and or vs versus as is are be my our we i
-    this that these those it its into over per each some any new run running into
-    """.split()
+    ["a", "an", "the", "of", "to", "in", "on", "for", "with", "by", "from", "and", "or", "vs", "versus", "as", "is", "are", "be", "my", "our", "we", "i", "this", "that", "these", "those", "it", "its", "into", "over", "per", "each", "some", "any", "new", "run", "running", "into"]
 )
 
 # Connector -> human label, for inferring ``<role>_label`` parameters. Covers the pilot's

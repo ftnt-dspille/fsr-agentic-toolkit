@@ -17,12 +17,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field
-
 from fsr_playbooks.mcp_server._citation_validator import (
     TurnEvidence,
     check_evidence_ids,
 )
+from pydantic import BaseModel, Field
 
 EvidenceKind = Literal["record", "run", "step", "query", "op", "audit", "module",
                        "playbook", "schema", "permission"]

@@ -36,16 +36,12 @@ import os
 import re
 from typing import Any
 
-
 from pyfsr.exceptions import FortiSOARException, PicklistResolutionError
 from pyfsr.projection import project, to_jsonable
-from .archetypes import map_use_case
 
 # --------------------------------------------------------------------------- spec
-
-
-from ..spec import ToolSpec, _obj  # noqa: E402,F401  (one spec type for verbs and workflows)
-
+from ..spec import ToolSpec, _obj
+from .archetypes import map_use_case
 
 # Reusable schema fragments -------------------------------------------------
 
@@ -903,7 +899,7 @@ def _paged(out: dict[str, Any], text: str, part: int) -> dict[str, Any]:
 
 def _h_playbook_yaml_reference(client, *, topic="", part=1) -> Any:
     sections = _authoring_sections()
-    norm = lambda h: re.sub(r"[`/()]", " ", h).lower().split()  # noqa: E731
+    norm = lambda h: re.sub(r"[`/()]", " ", h).lower().split()
     topics = [h for _lv, h, _b in sections]
     if not topic:
         body = "\n\n".join(b for _lv, h, b in sections if h in _OVERVIEW_SECTIONS)
@@ -1899,7 +1895,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
 )
 
 # The agent workflows join the same catalogue, gate and dispatch.
-from ..workflow_tools import WORKFLOW_SPECS  # noqa: E402
+from ..workflow_tools import WORKFLOW_SPECS
 
 _TOOLS = _TOOLS + WORKFLOW_SPECS
 
@@ -1944,9 +1940,7 @@ def tool_enabled(spec: ToolSpec, env: dict[str, str] | None = None) -> bool:
     if allow and not any(fnmatchcase(spec.name, pat) for pat in allow):
         return False
     deny = _globs("FSR_MCP_DENY_TOOLS", env)
-    if deny and any(fnmatchcase(spec.name, pat) for pat in deny):
-        return False
-    return True
+    return not (deny and any(fnmatchcase(spec.name, pat) for pat in deny))
 
 
 def enabled_tools(env: dict[str, str] | None = None) -> list[ToolSpec]:

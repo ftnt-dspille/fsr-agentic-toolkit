@@ -40,7 +40,7 @@ def _when_idle(read: Any, states: list[str], timeout: float = 600.0,
     while True:
         try:
             return read()
-        except Exception as exc:  # noqa: BLE001 -- classified below
+        except Exception as exc:
             if not is_migrate_transient(exc):
                 raise
             state = str(getattr(exc, "message", "") or exc).strip()[:120] or "publish in progress"

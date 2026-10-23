@@ -88,7 +88,7 @@ def test_dispatch_create_record_strict_returns_structured_error():
     programmatically - not as an opaque box 400."""
     from fsr_agentic_toolkit.verbs import tools
 
-    api, base = _api()
+    _, base = _api()
 
     class _Client:
         """Wraps the _api() FakeClient so client.records(module) returns a real

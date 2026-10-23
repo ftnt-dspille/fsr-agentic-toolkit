@@ -1,10 +1,10 @@
 """Unit tests for the agent tool registry and dispatch."""
 
 import pytest
-
-from fsr_agentic_toolkit.verbs import tools
 from pyfsr.exceptions import ResourceNotFoundError
 from pyfsr.pagination import HydraPage
+
+from fsr_agentic_toolkit.verbs import tools
 
 
 class FakeRecordSet:
@@ -215,7 +215,7 @@ def client():
 # -- registry / schema shape ------------------------------------------------
 def test_registry_covers_core_ops():
     names = {t.name for t in tools.list_tools()}
-    for expected in {
+    for expected in (
         "list_modules",
         "describe_module",
         "get_record",
@@ -249,7 +249,7 @@ def test_registry_covers_core_ops():
         "execution_context",
         "audit_activities",
         "map_use_case",
-    }:
+    ):
         assert expected in names
 
 
@@ -519,7 +519,7 @@ def test_dispatch_caps_oversized_result(monkeypatch):
             return {"name": "x" * 500}  # 500-char payload > 200 cap
 
     class BigClient:
-        list_modules = staticmethod(lambda: [])
+        list_modules = staticmethod(list)
 
         def records(self, module, **kw):
             return _BigRS()
@@ -541,7 +541,7 @@ def test_dispatch_passes_small_result_through(monkeypatch):
             return {"uuid": "abc", "name": "small"}
 
     class SmallClient:
-        list_modules = staticmethod(lambda: [])
+        list_modules = staticmethod(list)
 
         def records(self, module, **kw):
             return _SmallRS()
@@ -560,7 +560,7 @@ def test_dispatch_cap_disable(monkeypatch):
             return {"name": "x" * 10_000}
 
     class BigClient:
-        list_modules = staticmethod(lambda: [])
+        list_modules = staticmethod(list)
 
         def records(self, module, **kw):
             return _HugeRS()
@@ -579,7 +579,7 @@ def test_dispatch_error_not_truncated(monkeypatch):
             raise ResourceNotFoundError("x" * 200, type("R", (), {"status_code": 404})())
 
     class ErrClient:
-        list_modules = staticmethod(lambda: [])
+        list_modules = staticmethod(list)
 
         def records(self, module, **kw):
             return _ErrRS()

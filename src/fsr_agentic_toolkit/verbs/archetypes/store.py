@@ -27,7 +27,7 @@ import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .record import Archetype
@@ -144,7 +144,7 @@ class ArchetypeStore:
         for path in sorted(src.glob("*.json")):
             try:
                 archetype = Archetype.from_json(path.read_text(encoding="utf-8"))
-            except Exception as exc:  # pragma: no cover - defensive; one bad seed skips
+            except Exception as exc:  # noqa: BLE001  # pragma: no cover - defensive; one bad seed skips
                 import warnings
 
                 warnings.warn(f"skipping malformed seed {path.name}: {exc}", stacklevel=2)
@@ -156,4 +156,4 @@ class ArchetypeStore:
 
 def _now_iso() -> str:
     """UTC now as an ISO-8601 string (the ``Z`` suffix keeps it sortable + unambiguous)."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")

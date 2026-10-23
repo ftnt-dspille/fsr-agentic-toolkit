@@ -13,9 +13,9 @@ import re
 from typing import Any
 
 from fsr_playbooks.mcp_server import _shared
+from fsr_playbooks.run_failure import failure_of
 
 from .result import WorkflowResult, WorkflowRun
-from fsr_playbooks.run_failure import failure_of
 
 # Diagnostic codes from diagnose_yaml_against_pb_execution that mean a template
 # did not produce a value.

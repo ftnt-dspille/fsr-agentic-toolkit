@@ -1,8 +1,9 @@
 """Unit tests for SchedulesAPI (list/toggle/create/trigger) + the scheduling tools."""
 
 
-from fsr_agentic_toolkit.verbs.tools import dispatch
 from pyfsr.api.schedules import SchedulesAPI
+
+from fsr_agentic_toolkit.verbs.tools import dispatch
 
 _ENDPOINT = "/api/wf/api/scheduled/"
 _TRIGGER_NOW = "/api/wf/api/scheduled/trigger-now/"
@@ -25,7 +26,6 @@ class _Rec:
 
     def delete(self, endpoint, params=None, **kw):
         self.calls.append(("DELETE", endpoint, None, params))
-        return None
 
 
 # -- _parse_cron / _utc_offset -------------------------------------------------
@@ -115,7 +115,6 @@ class _FakeSchedules:
 
     def delete(self, name):
         self.delete_calls.append(name)
-        return None
 
 
 class _FakeClient:

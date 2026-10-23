@@ -71,7 +71,7 @@ One-command setup and the test loop CI runs (Python 3.11+):
 ```
 make install    # editable install + test/lint deps into .venv
 make test       # the full suite (what CI runs)
-make lint       # ruff (advisory; not yet a CI gate)
+make lint       # ruff (also enforced in CI)
 ```
 
 Or by hand, matching CI exactly:

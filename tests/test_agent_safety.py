@@ -5,9 +5,9 @@ install_connector handlers. All offline (fake client, env monkeypatching)."""
 from __future__ import annotations
 
 import pytest
+from pyfsr.exceptions import FortiSOARException
 
 from fsr_agentic_toolkit.verbs import tools
-from pyfsr.exceptions import FortiSOARException
 
 # --------------------------------------------------------------------------- fakes
 
@@ -158,7 +158,7 @@ def test_allow_globs_narrow_the_surface(monkeypatch, client):
 def test_deny_globs_hide_tools(monkeypatch, client):
     monkeypatch.setenv("FSR_MCP_DENY_TOOLS", "schedule_*,delete_*")
     names = {t["name"] for t in tools.tool_schemas()}
-    assert not any(n.startswith("schedule_") or n.startswith("delete_") for n in names)
+    assert not any(n.startswith(("schedule_", "delete_")) for n in names)
     out = tools.dispatch(client, "delete_record", {"module": "alerts", "ref": "u1", "confirm": True})
     assert out["error"]["type"] == "ToolDisabled"
 

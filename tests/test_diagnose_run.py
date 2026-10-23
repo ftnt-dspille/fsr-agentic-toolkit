@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fsr_agentic_toolkit.verbs import tools
 from pyfsr.api.playbooks import PlaybooksAPI
+
+from fsr_agentic_toolkit.verbs import tools
 
 
 def _definition(uuid: str, name: str, steps: list[dict[str, Any]]) -> dict[str, Any]:

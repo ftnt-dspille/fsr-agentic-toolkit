@@ -28,7 +28,7 @@ from __future__ import annotations
 import json
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +46,7 @@ _NON_PLAYBOOK_FILES = {"collection.metadata.json", "globalVariables.json", "tags
 
 def _now_iso() -> str:
     """UTC now as an ISO-8601 string with a ``Z`` suffix (sortable, unambiguous)."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _uuid_tail(iri: Any) -> str | None:

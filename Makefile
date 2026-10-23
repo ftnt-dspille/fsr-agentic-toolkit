@@ -19,7 +19,7 @@ install: $(VENV) ## Editable install with dev deps (pytest + ruff) into .venv
 test: install ## Run the full test suite (what CI runs)
 	$(PY) -m pytest -q
 
-lint: install ## ruff check (advisory; not a CI gate yet)
+lint: install ## ruff check (also a CI gate)
 	$(PY) -m ruff check .
 
 fix: install ## ruff check --fix (safe fixes only)

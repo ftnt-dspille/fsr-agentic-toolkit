@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 from pyfsr.client import FortiSOAR
 from pyfsr.config import EnvConfig
 from pyfsr.instances import InstanceRegistry
+
 from .tools import dispatch, tool_schemas
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -173,7 +174,7 @@ def _mcp_tools(registry: Any | None = None) -> list[Any]:
     (enumerated over the configured instances) and a ``list_instances`` meta-tool
     is appended so an agent can discover the available targets.
     """
-    import mcp.types as types
+    from mcp import types
 
     instance_prop = _instance_property(registry) if registry is not None else None
     tools: list[Any] = []
@@ -202,7 +203,7 @@ def _mcp_tools(registry: Any | None = None) -> list[Any]:
 
 def _text_content(obj: Any) -> list[Any]:
     """Wrap a JSON-able object as size-capped MCP text content."""
-    import mcp.types as types
+    from mcp import types
 
     text = _cap_output(json.dumps(obj, indent=2, default=str))
     return [types.TextContent(type="text", text=text)]
@@ -242,7 +243,7 @@ def build_server(target: Any) -> Server:
     surfaced as structured JSON content by :func:`fsr_agentic_toolkit.verbs.tools.dispatch`, so
     a tool call never crashes the session.
     """
-    import mcp.types as types
+    from mcp import types
     from mcp.server.lowlevel import Server
 
     registry = _as_registry(target)
