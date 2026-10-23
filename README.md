@@ -66,6 +66,19 @@ alias.
 
 ## Development
 
+One-command setup and the test loop CI runs (Python 3.11+):
+
 ```
-pip install -e . && pytest
+make install    # editable install + test/lint deps into .venv
+make test       # the full suite (what CI runs)
+make lint       # ruff (advisory; not yet a CI gate)
 ```
+
+Or by hand, matching CI exactly:
+
+```
+pip install -e ".[test]"
+python -m pytest -q
+```
+
+Note the `[test]` extra: `pip install -e .` alone does not pull in pytest.

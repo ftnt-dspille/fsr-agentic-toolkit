@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+# Everything a contributor needs: the test runner plus the configured linter.
+# `make install` uses this; CI installs `[test]` only (ruff is advisory for now).
+dev = ["pytest>=8", "ruff>=0.15"]
 
 [project.scripts]
 fsr-agentic-toolkit = "fsr_agentic_toolkit.cli:main"
