@@ -107,6 +107,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
               "yaml_text": {**_STR, "description": "The playbook YAML, to re-render its Jinja."}},
              ["playbook_or_id"]),
         _wf(_debug_run),
+        workflow=True,
     ),
     ToolSpec(
         "verify_effect",
@@ -117,6 +118,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
               "fields": {"type": "object", "description": "field -> expected value"},
               "assertions": {"type": "array", "items": {"type": "object"}}}),
         _wf(_verify_effect),
+        workflow=True,
     ),
     ToolSpec(
         "orient",
@@ -125,13 +127,15 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "role or team, with the fix), and the configured connectors matching the goal.",
         _obj({"goal": _STR, "modules": _STRS}),
         _wf(_orient),
+        workflow=True,
     ),
     ToolSpec(
         "provision_module",
-        "Create a module and leave it usable: create, publish (only when nothing else is "
-        "staged; a publish already in flight is waited out and reported), grant the role(s), "
-        "then prove the caller can read and create there. check_only=true writes nothing and "
-        "names the break (unpublished, role, team) and the fix.",
+        "Create a usable custom module in ONE call. Do NOT hand-roll create_module + publish + "
+        "create_record + a role grant -- this does all of it and proves it: create, publish (only "
+        "when nothing else is staged; a publish already in flight is waited out and reported, so "
+        "you never sleep or poll), grant the role(s), then verify the caller can read and create "
+        "there. check_only=true writes nothing and names the break (unpublished, role, team) and the fix.",
         _obj({"module": {**_STR, "description": "Module type, lowercase_with_underscores."},
               "label": _STR, "plural": _STR,
               "fields": {"type": "array", "items": {"type": "object"},
@@ -141,6 +145,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         _wf(_provision_module),
         mutating=True,
         destructive=True,
+        workflow=True,
     ),
     ToolSpec(
         "repair_playbook",
@@ -149,6 +154,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "listed for a hand edit. Publishing the fix is a separate call.",
         _obj({"follow_up": _STR, "yaml_text": _STR}, ["follow_up", "yaml_text"]),
         _wf(_repair_playbook),
+        workflow=True,
     ),
     ToolSpec(
         "investigate_alert",
@@ -157,6 +163,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "For FortiSOAR's own native AI investigation use run_fortiai_investigation.",
         _obj({"iri": {**_STR, "description": "The alert IRI, /api/3/alerts/<uuid>."}}, ["iri"]),
         _wf(_investigate_alert),
+        workflow=True,
     ),
     ToolSpec(
         "build_playbook",
@@ -165,6 +172,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "record). Without yaml_text it returns the facts to write the draft from.",
         _obj({"goal": _STR, "yaml_text": _STR, "modules": _STRS}, ["goal"]),
         _wf(_build_playbook),
+        workflow=True,
     ),
 )
 

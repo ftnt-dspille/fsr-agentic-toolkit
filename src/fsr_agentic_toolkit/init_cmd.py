@@ -143,6 +143,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         "or FSR_MCP_ALLOW_TOOLS/FSR_MCP_DENY_TOOLS to narrow it. Destructive tools "
         "always need confirm=true."
     )
+    from .verbs.mcp import OPERATING_GUIDE
+
+    print("\n--- how to drive it ---\n" + OPERATING_GUIDE)
     return 0
 
 

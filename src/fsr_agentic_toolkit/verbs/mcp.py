@@ -233,6 +233,38 @@ def _route_call(registry: Any, name: str, arguments: dict[str, Any] | None) -> l
     return _call(client, name, args)
 
 
+#: Agent-facing operating guide, advertised as the MCP server's ``instructions``
+#: (shown to the model at connect time) and reused by ``fsr-agentic-toolkit init``
+#: and the repo AGENTS.md. It routes a goal to a WORKFLOW first -- the toolkit's
+#: recommended path -- so a model takes a ready-made, evidence-backed verb instead
+#: of hand-rolling the same steps from low-level primitives.
+OPERATING_GUIDE = """\
+fsr-agentic-toolkit drives FortiSOAR through evidence-backed WORKFLOWS. Route your
+goal to a workflow first (workflows are listed first); reach for a low-level tool
+only when no workflow fits.
+
+- Understand a box, or a goal's modules / access / connectors -> orient (start here).
+- Create a usable custom module -> provision_module (do NOT hand-roll
+  create_module + publish + a role grant + a probe write; provision_module does all
+  of that, handles the post-publish settle, and verifies the caller can read/create).
+- A playbook run misbehaved -> debug_run, then repair_playbook with its result id.
+- Author a playbook -> build_playbook, then publish_playbook, then verify_effect.
+- Confirm a write actually landed -> verify_effect (reads the record back).
+- Gather an alert's evidence -> investigate_alert.
+
+Principles:
+- Prefer ONE workflow call over reconstructing the same steps from primitives. The
+  workflows handle publish-settle, retries, grants and read-back; never add your own
+  sleep/poll around a publish.
+- Start from the smallest useful read (orient) and expand only on a concrete gap.
+  Do not repeat an identical call.
+- Results carry evidence and findings -- cite them, and separate what was verified
+  from what was assumed.
+- High-impact tools (provision_module, publish, deletes) need confirm=true; tell the
+  user exactly what will change first.
+"""
+
+
 def build_server(target: Any) -> Server:
     """Create an MCP :class:`~mcp.server.lowlevel.Server` bound to ``target``.
 
@@ -254,7 +286,13 @@ def build_server(target: Any) -> Server:
     async def on_call_tool(ctx: Any, params: Any) -> Any:
         return types.CallToolResult(content=_route_call(registry, params.name, params.arguments))
 
-    return Server(SERVER_NAME, on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+    try:
+        return Server(SERVER_NAME, instructions=OPERATING_GUIDE,
+                      on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+    except TypeError:
+        # Older mcp SDK without the instructions kwarg: the guide still reaches
+        # agents via `fsr-agentic-toolkit init` output and the repo AGENTS.md.
+        return Server(SERVER_NAME, on_list_tools=on_list_tools, on_call_tool=on_call_tool)
 
 
 async def serve(registry: InstanceRegistry | None = None, *, client: FortiSOAR | None = None) -> None:

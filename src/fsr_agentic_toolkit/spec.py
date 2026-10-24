@@ -22,6 +22,15 @@ class ToolSpec:
     gate in :func:`dispatch` reads these: ``FSR_MCP_READONLY=1`` refuses every
     mutating tool, and a destructive tool always requires ``confirm: true`` in
     its arguments. A destructive tool is always also mutating (enforced in tests).
+
+    ``workflow`` marks a higher-level, evidence-backed verb that does a whole job
+    end to end (provision_module, orient, debug_run, ...). ``advanced`` marks a
+    low-level building block that a workflow usually subsumes (create_module,
+    publish, create_record, ...): still available, but an agent should reach for
+    the workflow first. These drive how the surface is presented -- workflows are
+    advertised first and advanced tools last, and each carries a one-word lead tag
+    in its advertised description -- so a model picks the recommended path instead
+    of hand-rolling it from primitives. A tool is never both.
     """
 
     name: str
@@ -30,17 +39,46 @@ class ToolSpec:
     handler: Callable[..., Any]
     mutating: bool = False
     destructive: bool = False
+    workflow: bool = False
+    advanced: bool = False
+
+    def __post_init__(self) -> None:
+        if self.workflow and self.advanced:
+            raise ValueError(f"{self.name}: a tool is either a workflow or advanced, not both")
+
+    @property
+    def surface_rank(self) -> int:
+        """Advertise order: workflows first (0), ordinary tools next (1), advanced last (2).
+
+        A model browsing or searching the deferred tool catalog meets the
+        recommended higher-level verbs before the low-level primitives they
+        subsume, so it takes the workflow instead of decomposing the task."""
+        return 0 if self.workflow else 2 if self.advanced else 1
+
+    @property
+    def advertised_description(self) -> str:
+        """Description as advertised, with a one-word lead tag for workflow/advanced.
+
+        The tag survives even a terse catalog row (name + first words), which is
+        often all a model reads before selecting a tool, so the hierarchy is legible
+        without the model having to open the full description."""
+        if self.workflow:
+            return f"WORKFLOW (preferred path) -- {self.description}"
+        if self.advanced:
+            return f"[low-level building block] {self.description}"
+        return self.description
 
     def to_dict(self) -> dict[str, Any]:
         """Generic ``{name, description, input_schema}`` (no handler).
 
         A destructive tool's schema is rendered with the ``confirm`` argument
         the dispatch gate requires, so agents discover it instead of hitting a
-        confirmation_required error first.
+        confirmation_required error first. The description carries the
+        workflow/advanced lead tag (see :attr:`advertised_description`).
         """
         return {
             "name": self.name,
-            "description": self.description,
+            "description": self.advertised_description,
             "input_schema": self.rendered_schema(),
         }
 

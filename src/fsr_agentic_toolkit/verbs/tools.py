@@ -1268,10 +1268,13 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "create_module",
-        "Create a new module in STAGING (call publish to make it live). Define its fields and "
-        "optionally grant a role permissions in one call via grant_to (e.g. "
-        "['Full App Permissions']) -- otherwise the new module gets no role permissions and "
-        "record writes will 403 until you grant them. Returns the created staging module.",
+        "Prefer provision_module to create a module -- it creates, publishes (with settle), grants "
+        "the role and verifies in one gated call. Use create_module directly only to stage schema "
+        "WITHOUT publishing. It creates a new module in STAGING (call publish to make it live) and "
+        "optionally grants a role via grant_to (e.g. ['Full App Permissions']) -- otherwise the new "
+        "module gets no role permissions and record writes 403 until you grant them. A module left "
+        "staged-but-unpublished, or published without a role grant, is NOT usable; that is why "
+        "provision_module is the recommended path. Returns the created staging module.",
         _obj(
             {
                 "module": _MODULE,
@@ -1302,6 +1305,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         ),
         _h_create_module,
         mutating=True,
+        advanced=True,
     ),
     ToolSpec(
         "delete_module",
@@ -1334,9 +1338,12 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "publish",
-        "Commit ALL staged schema changes appliance-wide (module creates/deletes/edits). This is "
-        "appliance-wide, not module-scoped -- every staged change ships at once. Polls until the "
-        "publish job finishes. Call after create_module/delete_module to make them live.",
+        "For creating a module, prefer provision_module (it publishes with the post-publish settle "
+        "handled, so you never sleep or poll). Use publish directly only to commit OTHER staged "
+        "schema changes. It commits ALL staged schema changes appliance-wide (module "
+        "creates/deletes/edits) -- every staged change ships at once, not just yours -- and polls "
+        "until the job finishes. Right after a publish the box rejects record writes for a few "
+        "seconds; do NOT add your own sleep/poll, the workflow already waits that out.",
         _obj(
             {
                 "timeout": {"type": "number", "description": "Max seconds to wait (default 600)."},
@@ -1350,6 +1357,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _h_publish,
         mutating=True,
         destructive=True,
+        advanced=True,
     ),
     ToolSpec(
         "default_connector_config",
@@ -1944,8 +1952,14 @@ def tool_enabled(spec: ToolSpec, env: dict[str, str] | None = None) -> bool:
 
 
 def enabled_tools(env: dict[str, str] | None = None) -> list[ToolSpec]:
-    """The registry filtered by the current env policy (what an agent may see)."""
-    return [t for t in _TOOLS if tool_enabled(t, env)]
+    """The registry filtered by the current env policy (what an agent may see).
+
+    Ordered workflow-first, advanced (low-level) last (:attr:`ToolSpec.surface_rank`),
+    so a model browsing or searching the deferred catalog meets the recommended
+    higher-level verbs before the primitives they subsume. The sort is stable, so
+    the authored order is preserved within each rank."""
+    allowed = [t for t in _TOOLS if tool_enabled(t, env)]
+    return sorted(allowed, key=lambda t: t.surface_rank)
 
 
 def _policy_refusal(spec: ToolSpec, arguments: dict[str, Any]) -> dict[str, Any] | None:
