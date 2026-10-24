@@ -492,39 +492,9 @@ def _h_publish_playbook(client, *, yaml_text, overwrite_changed=False) -> Any:
 
 
 # -- module admin -----------------------------------------------------------
-def _coerce_field_specs(fields):
-    """Translate simple ``{name, type[, picklist][, required][, label]}`` specs
-    into real attribute metadata via the typed builders.
-
-    Hand-built dicts with a bare display type (``text``, ``picklist``) pass the
-    staging POST but fail at publish with "Attribute type 'text' does not exist"
-    (live-verified on 8.0.0), so the natural agent shape is translated here. A
-    spec that already carries ``formType`` is treated as full metadata and
-    passed through untouched.
-    """
-    if not fields:
-        return fields
-    # Classmethod builders: independent of the client, so test fakes work too.
-    from pyfsr.api.modules_admin import ModulesAdminAPI
-
-    out = []
-    for f in fields:
-        if not isinstance(f, dict) or "formType" in f or "type" not in f:
-            out.append(f)
-            continue
-        spec = dict(f)
-        name = spec.pop("name")
-        ftype = spec.pop("type")
-        picklist = spec.pop("picklist", None)
-        if ftype in ("picklist", "multiselectpicklist") or picklist:
-            out.append(
-                ModulesAdminAPI.picklist_field(
-                    name, picklist or "Severity", multi=ftype == "multiselectpicklist", **spec
-                )
-            )
-        else:
-            out.append(ModulesAdminAPI.typed_field(name, ftype, **spec))
-    return out
+# Field-spec coercion is shared with the provision_module workflow; it lives in
+# .._fields to avoid the verbs <-> workflow_tools <-> workflows import cycle.
+from .._fields import coerce_field_specs as _coerce_field_specs
 
 
 def _h_create_module(

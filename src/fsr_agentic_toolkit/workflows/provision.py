@@ -17,6 +17,7 @@ from typing import Any
 
 from fsr_playbooks.mcp_server import _shared
 
+from .._fields import coerce_field_specs
 from . import access as A
 from .result import WorkflowResult, WorkflowRun
 
@@ -95,7 +96,7 @@ def provision_module(module: str, label: str = "", plural: str = "",
     # 1. create
     if not (published or staged):
         admin.create_module(module, label=label or None, plural=plural or None,
-                            fields=fields)
+                            fields=coerce_field_specs(fields))
         run.finding(f"created {module} (staged)",
                     [run.evidence("module", module, "create_module")], "high")
 
