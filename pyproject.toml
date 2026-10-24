@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-  "pyfsr>=0.27.0",
+  "pyfsr>=0.28.0",
   "fsr-playbooks>=0.8.0",
   "mcp>=2.0,<3",
   "pydantic>=2",
