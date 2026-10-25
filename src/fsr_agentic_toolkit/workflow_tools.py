@@ -102,7 +102,9 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "Explain why a playbook run did what it did, with evidence. Give a playbook name (its "
         "latest failed run) or a run pk. Findings cite the run and its steps: the failing step "
         "and its error, and any step argument that does not render against the run's own vars "
-        "(the first is the likely root cause). Pass the result id to repair_playbook.",
+        "(the first is the likely root cause). When such an argument reads a connector step's "
+        "output and yaml_text is supplied, it also names the paths that actually resolve for "
+        "that op (from the grounded shape oracle). Pass the result id to repair_playbook.",
         _obj({"playbook_or_id": {**_STR, "description": "Playbook name, or a run pk / task id."},
               "yaml_text": {**_STR, "description": "The playbook YAML, to re-render its Jinja."}},
              ["playbook_or_id"]),
