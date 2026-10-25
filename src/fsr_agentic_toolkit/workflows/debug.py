@@ -24,6 +24,46 @@ _BAD_RENDER = frozenset({"render_error", "render_threw", "empty_render", "step_m
 
 
 _DOUBLE_IRI = re.compile(r"/api/3/[A-Za-z0-9_]+/+/?api/3/")
+_STEP_REF = re.compile(r"vars\.steps\.([A-Za-z0-9_]+)")
+
+
+def _connector_ops_by_key(yaml_text: str | None) -> dict[str, tuple[str, str]]:
+    """Map each step's jinja key (name, spaces->underscores) to its
+    (connector, operation), for connector steps only. Empty on any failure."""
+    if not yaml_text:
+        return {}
+    try:
+        import yaml
+        doc = yaml.safe_load(yaml_text) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    for pb in (doc.get("playbooks") or []):
+        for s in (pb.get("steps") or []):
+            if s.get("type") in ("connector", "connector_op"):
+                conn, op = s.get("connector"), s.get("operation")
+                if conn and op:
+                    out[str(s.get("name", "")).strip().replace(" ", "_")] = (conn, op)
+    return out
+
+
+def _reference_fix(template: object, by_key: dict[str, tuple[str, str]]) -> dict | None:
+    """If a failing template reads a connector step's output, the grounded,
+    resolvable paths for that op (so the fix rides along with the diagnosis)."""
+    if not isinstance(template, str) or not by_key:
+        return None
+    for key in _STEP_REF.findall(template):
+        if key in by_key:
+            connector, op = by_key[key]
+            try:
+                from fsr_playbooks.output_shape import grounded_help
+                help_ = grounded_help(connector, op, step_name=key)
+            except Exception:  # noqa: BLE001
+                return None
+            if help_.get("grounded") and help_.get("suggested_references"):
+                return {"step": key, "connector": connector, "operation": op,
+                        "paths": [r["path"] for r in help_["suggested_references"][:4]]}
+    return None
 
 
 def _implicated(rendered: Any, error: str | None) -> bool:
@@ -75,6 +115,7 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
         run.finding(f"The run ended {status} without naming a failing step",
                     [run_ev], "medium")
 
+    by_key = _connector_ops_by_key(yaml_text)
     bad = [d for d in (raw.get("step_diagnostics") or [])
            if isinstance(d, dict) and d.get("code") in _BAD_RENDER]
     for i, d in enumerate(bad):
@@ -86,6 +127,14 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
         run.finding(f"Step {d.get('step')!r} argument {d.get('arg_path')} does not render "
                     f"against the run's vars ({d.get('code')}): {role}", cites,
                     "high" if i == 0 else "medium")
+        # If the template reads a connector step's output, ride the actual
+        # resolvable paths along with the diagnosis -- the shape the compiler
+        # can't infer but the grounded oracle measured from a real run.
+        fix = _reference_fix(d.get("template"), by_key)
+        if fix:
+            run.finding(
+                f"{fix['step']!r} is {fix['connector']}.{fix['operation']}; its output "
+                f"resolves at: {', '.join(fix['paths'])}", [ev], "high")
     # Templates that rendered "fine" but produced the bad value the runtime error
     # names (live: an IRI pasted into a path that already had the module prefix,
     # giving /api/3/alerts//api/3/alerts/<uuid> and a 404).
