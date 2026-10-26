@@ -67,6 +67,9 @@ class _FakeClient:
         self.system = _FakeSystem()
         self.connectors = _FakeConnectors()
 
+    def version(self):  # API-key-safe probe (/cyops_version.json, /api/3/appliances)
+        return {"version": "8.0.0"}
+
 
 @pytest.fixture
 def client():
@@ -256,12 +259,16 @@ def test_agent_error_body_is_truncated(client):
 def test_whoami_returns_user_base_url_and_version(client):
     out = tools.dispatch(client, "whoami", {})
     assert out["user"]["loginid"] == "analyst"
+    assert out["auth_mode"] == "jwt"
     assert out["base_url"] == "https://fortisoar.example.com"
     assert out["version"] == {"version": "8.0.0"}
 
 
 def test_whoami_version_failure_is_soft(client):
-    client.system = None
+    def _boom():
+        raise RuntimeError("no version endpoint answered")
+
+    client.version = _boom
     out = tools.dispatch(client, "whoami", {})
     assert out["user"]["loginid"] == "analyst"
     assert "version_error" in out

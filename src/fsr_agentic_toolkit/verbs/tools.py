@@ -36,7 +36,11 @@ import os
 import re
 from typing import Any
 
-from pyfsr.exceptions import FortiSOARException, PicklistResolutionError
+from pyfsr.exceptions import (
+    FortiSOARException,
+    PicklistResolutionError,
+    UnsupportedAuthOperationError,
+)
 from pyfsr.projection import project, to_jsonable
 
 # --------------------------------------------------------------------------- spec
@@ -321,13 +325,34 @@ def _h_list_ai_config(client) -> Any:
 
 # -- identity / onboarding ----------------------------------------------------
 def _h_whoami(client) -> Any:
-    """Who am I + where am I: the connect-and-verify handshake for an agent."""
-    out: dict[str, Any] = {
-        "user": client.users.whoami(),
-        "base_url": getattr(client, "base_url", None),
-    }
+    """Who am I + where am I: the connect-and-verify handshake for an agent.
+
+    Prefers reads that answer under any auth mode. ``users.whoami()`` enriches
+    the result with the login id and person profile, but that needs the JWT-only
+    DAS ``/api/auth`` route. An API-key principal has no such record -- it is an
+    ``ApiKey`` actor, not a person -- so under an API key we stop at
+    ``GET /api/3/actors/current`` (which answers in both auth modes) and report
+    the key's self-description instead of failing. Version uses ``client.version()``
+    (``/cyops_version.json`` then ``/api/3/appliances``), not the JWT-only
+    ``system.version()``.
+    """
+    out: dict[str, Any] = {"base_url": getattr(client, "base_url", None)}
     try:
-        out["version"] = client.system.version()
+        out["user"] = client.users.whoami()
+        out["auth_mode"] = "jwt"
+    except UnsupportedAuthOperationError:
+        actor = client.get("/api/3/actors/current")
+        out["auth_mode"] = "api_key"
+        out["user"] = {
+            "principal_type": actor.get("@type") or actor.get("userType"),
+            "name": actor.get("name"),
+            "person_uuid": actor.get("uuid"),
+            "user_id": actor.get("userId"),
+            "loginid": None,
+            "note": "API-key principal: no login or person record; identified by the key actor.",
+        }
+    try:
+        out["version"] = client.version()
     except Exception as exc:  # noqa: BLE001 - version is best-effort garnish
         out["version_error"] = str(exc)
     return out
@@ -2041,6 +2066,18 @@ def _agent_error(exc: Exception, *, tool: str) -> dict[str, Any]:
                 snippet = snippet[:600] + "..."
             if snippet and snippet not in err["message"]:
                 err["body"] = snippet
+    # Flag an auth-mode mismatch so the agent stops retrying and reaches for a
+    # tool that works with its credentials. These tools need a JWT (user or
+    # admin login); an API key cannot perform them.
+    if isinstance(exc, UnsupportedAuthOperationError):
+        err["jwt_only"] = True
+        err["auth_operation"] = getattr(exc, "operation", None)
+        err["hint"] = (
+            "This operation needs a user or admin JWT; the current client is an API "
+            "key. Use an API-key-compatible read instead (whoami still answers with "
+            "the key's identity; orient, list_modules, query_records all work), or "
+            "re-run with a username/password client for this specific operation."
+        )
     # Surface the structured fields of a picklist miss so the agent can pick a
     # valid value programmatically instead of parsing the message string.
     if isinstance(exc, PicklistResolutionError):
