@@ -80,14 +80,47 @@ def _diagnose(playbook_or_id: str, yaml_text: str | None) -> dict[str, Any]:
     return why_did_playbook_fail(playbook_or_id, yaml_text=yaml_text)
 
 
+def _failure_by_name(playbook_or_id: str) -> dict[str, Any] | None:
+    """Read a playbook's latest run failure straight off the run record, by name.
+
+    The library's by-name path renders the playbook's Jinja against the run,
+    which means decompiling the live playbook -- and that decompiler lives in the
+    dev `tooling/` tree, not the published library, so a name lookup there can
+    come back `decompile_import_failed` (No module named 'cli'). The Jinja
+    re-render is a bonus; the core diagnosis (failing step + error) comes straight
+    off the run record via the client we already hold, so fall back to that rather
+    than surface an import error to the analyst.
+    """
+    if not playbook_or_id or playbook_or_id.isdigit():
+        return None  # a run-id input already resolves a run; no name fallback
+    client = _shared._live_client()
+    if client is None:
+        return None
+    try:
+        return failure_of(getattr(client, "playbooks", None), playbook=playbook_or_id)
+    except Exception:  # noqa: BLE001 -- best effort; never raise out of a fallback
+        return None
+
+
 def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResult:
     run = WorkflowRun("debug_run")
     raw = _diagnose(playbook_or_id, yaml_text)
     if not isinstance(raw, dict) or (raw.get("ok") is False and not raw.get("pb_execution")):
-        msg = (raw or {}).get("message") or (raw or {}).get("error") or "could not resolve the run"
-        run.unknown(f"{(raw or {}).get('code') or 'unresolved'}: {msg}")
-        run.next("list_playbook_runs(playbook=...)", "find the run to debug by pk", 1)
-        return run.result("blocked")
+        # The library could not resolve/enrich the run (commonly: its decompiler
+        # is not in the published library). Before giving up, read the failure off
+        # the run record by name so we still name the failing step and the error.
+        rf = _failure_by_name(playbook_or_id)
+        if rf and (rf.get("failing_step") or rf.get("error_message")):
+            raw = {"ok": True, "pb_execution": str(rf.get("pk") or ""),
+                   "playbook_name": playbook_or_id, "run_status": rf.get("status"),
+                   "failing_step": rf.get("failing_step"),
+                   "error_message": rf.get("error_message"),
+                   "step_diagnostics": [], "hints": []}
+        else:
+            msg = (raw or {}).get("message") or (raw or {}).get("error") or "could not resolve the run"
+            run.unknown(f"{(raw or {}).get('code') or 'unresolved'}: {msg}")
+            run.next("list_playbook_runs(playbook=...)", "find the run to debug by pk", 1)
+            return run.result("blocked")
 
     pk = str(raw.get("pb_execution") or "")
     status = raw.get("run_status")

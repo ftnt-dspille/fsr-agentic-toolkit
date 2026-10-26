@@ -87,6 +87,37 @@ def test_debug_run_blocked_when_the_run_cannot_be_resolved(monkeypatch):
     assert r.status == "blocked" and "no_failed_runs" in r.unknowns[0]
 
 
+def test_debug_run_falls_back_to_the_run_record_when_decompile_is_unshipped(monkeypatch):
+    """The published library has no decompiler, so a by-name lookup can return
+    `decompile_import_failed` (No module named 'cli'). debug_run must still name
+    the failing step + error by reading the run record, not block on the import.
+    """
+    monkeypatch.setattr(D, "_diagnose", lambda p, y: {
+        "ok": False, "code": "decompile_import_failed",
+        "message": "ModuleNotFoundError(\"No module named 'cli'\")"})
+    monkeypatch.setattr(_shared, "_live_client", lambda: object())
+    monkeypatch.setattr(D, "failure_of", lambda pbs, **kw: {
+        "failing_step": "Tag Alert", "status": "failed", "pk": "10638",
+        "error_message": "404 Not Found for url: /api/3/alerts/00000000-0000-0000-0000-000000000000"})
+    r = D.debug_run("Tag Agent Lab Alerts")
+    assert r.status == "answered"
+    claims = [f.claim for f in r.findings]
+    assert any("failed at step 'Tag Alert'" in c for c in claims)
+    assert any("404" in c for c in claims)
+    assert "No module named" not in " ".join(u for u in r.unknowns)
+    assert r.next and r.next[0].action.startswith("repair_playbook(follow_up=")
+
+
+def test_debug_run_still_blocks_when_the_run_record_is_also_empty(monkeypatch):
+    """No decompiler AND no readable failure -> block cleanly (not a traceback)."""
+    monkeypatch.setattr(D, "_diagnose", lambda p, y: {
+        "ok": False, "code": "decompile_import_failed", "message": "No module named 'cli'"})
+    monkeypatch.setattr(_shared, "_live_client", lambda: object())
+    monkeypatch.setattr(D, "failure_of", lambda pbs, **kw: None)
+    r = D.debug_run("Tag Agent Lab Alerts")
+    assert r.status == "blocked" and r.unknowns
+
+
 def test_debug_run_result_is_a_follow_up_handle(monkeypatch):
     monkeypatch.setattr(D, "_diagnose", lambda p, y: _diag())
     r = D.debug_run("x")
