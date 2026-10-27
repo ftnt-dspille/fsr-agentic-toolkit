@@ -22,6 +22,13 @@ from .result import WorkflowResult, WorkflowRun
 _BAD_RENDER = frozenset({"render_error", "render_threw", "empty_render", "step_missing",
                          "attribute_missing"})
 
+# Diagnosis codes that mean "a failed run exists but the library could not
+# decompile/enrich it" (its decompiler lives in the dev `tooling/` tree, absent
+# from the published library). These -- and only these -- warrant reading the
+# failure straight off the run record by name. Terminal codes like
+# `no_failed_runs` mean there is nothing to debug and must block.
+_DECOMPILE_UNUSABLE_CODES = frozenset({"decompile_import_failed", "decompile_failed"})
+
 
 _DOUBLE_IRI = re.compile(r"/api/3/[A-Za-z0-9_]+/+/?api/3/")
 _STEP_REF = re.compile(r"vars\.steps\.([A-Za-z0-9_]+)")
@@ -105,10 +112,14 @@ def _failure_by_name(playbook_or_id: str) -> dict[str, Any] | None:
 def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResult:
     run = WorkflowRun("debug_run")
     raw = _diagnose(playbook_or_id, yaml_text)
-    if not isinstance(raw, dict) or (raw.get("ok") is False and not raw.get("pb_execution")):
-        # The library could not resolve/enrich the run (commonly: its decompiler
-        # is not in the published library). Before giving up, read the failure off
-        # the run record by name so we still name the failing step and the error.
+    unusable = not isinstance(raw, dict) or (raw.get("ok") is False and not raw.get("pb_execution"))
+    code = raw.get("code") if isinstance(raw, dict) else None
+    # Only read the failure off the run record when the library could not
+    # DECOMPILE/enrich the run -- its decompiler is unshipped (No module named
+    # 'cli'). A clean "no failed run" / "not found" means there is genuinely
+    # nothing to debug: it must block, not trigger a by-name scrape that could
+    # latch onto some other run (env-dependent, so it hid in hermetic CI).
+    if unusable and (code in _DECOMPILE_UNUSABLE_CODES or not isinstance(raw, dict)):
         rf = _failure_by_name(playbook_or_id)
         if rf and (rf.get("failing_step") or rf.get("error_message")):
             raw = {"ok": True, "pb_execution": str(rf.get("pk") or ""),
@@ -116,11 +127,12 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
                    "failing_step": rf.get("failing_step"),
                    "error_message": rf.get("error_message"),
                    "step_diagnostics": [], "hints": []}
-        else:
-            msg = (raw or {}).get("message") or (raw or {}).get("error") or "could not resolve the run"
-            run.unknown(f"{(raw or {}).get('code') or 'unresolved'}: {msg}")
-            run.next("list_playbook_runs(playbook=...)", "find the run to debug by pk", 1)
-            return run.result("blocked")
+            unusable = False
+    if unusable:
+        msg = (raw or {}).get("message") or (raw or {}).get("error") or "could not resolve the run"
+        run.unknown(f"{(raw or {}).get('code') or 'unresolved'}: {msg}")
+        run.next("list_playbook_runs(playbook=...)", "find the run to debug by pk", 1)
+        return run.result("blocked")
 
     pk = str(raw.get("pb_execution") or "")
     status = raw.get("run_status")
