@@ -490,7 +490,10 @@ def _h_compile_playbook_yaml(client, *, yaml_text) -> Any:
         wfs = compiled.get("workflows") or []
         out["collection"] = compiled.get("name")
         out["playbooks"] = [w.get("name") for w in wfs if isinstance(w, dict)]
-        out["note"] = "Compiled clean. Call publish_playbook with the same yaml_text to push it."
+        out["note"] = ("Compiled clean -- but this checks STRUCTURE only, not whether a "
+                       "step's output references resolve at run time (a playbook can compile "
+                       "clean and still render a field empty). Gate the draft with "
+                       "build_playbook before publish_playbook.")
     return out
 
 
@@ -1854,8 +1857,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "compile_playbook_yaml",
         "Compile fsr_playbooks-format playbook YAML to FortiSOAR JSON OFFLINE (no appliance "
-        "I/O) and report {ok, errors[], playbooks[]}. Always compile before publish_playbook; "
-        "fix every non-warning error first. Requires the optional fsr_playbooks package "
+        "I/O) and report {ok, errors[], playbooks[]}. This is a STRUCTURE check only -- it "
+        "does not verify that step-output references resolve at run time. Fix every "
+        "non-warning error, then gate the draft with build_playbook (which runs the grounded "
+        "checks) before publish_playbook. Requires the optional fsr_playbooks package "
         "(pip install 'pyfsr[playbooks]').",
         _obj(
             {"yaml_text": {"type": "string", "description": "The playbook collection YAML source."}},
