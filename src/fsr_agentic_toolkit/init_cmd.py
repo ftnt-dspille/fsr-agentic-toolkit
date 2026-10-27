@@ -91,8 +91,15 @@ _SNIPPETS = {
 
 
 def _verify(args: argparse.Namespace) -> dict | None:
-    """whoami against the box; None (with a printed error) when unreachable."""
+    """whoami against the box; None (with a printed error) when unreachable.
+
+    Under an API key, ``whoami`` is JWT-only (the DAS /api/auth login lookup
+    rejects API keys). Rather than fail verification, identify the key by its
+    ``ApiKey`` actor via ``/api/3/actors/current``, which answers in both auth
+    modes -- the same degrade the whoami tool uses.
+    """
     from pyfsr.client import FortiSOAR
+    from pyfsr.exceptions import UnsupportedAuthOperationError
 
     try:
         client = FortiSOAR(
@@ -101,7 +108,16 @@ def _verify(args: argparse.Namespace) -> dict | None:
             verify_ssl=not args.no_verify_ssl,
             suppress_insecure_warnings=args.no_verify_ssl,
         )
-        return client.users.whoami()
+        try:
+            return client.users.whoami()
+        except UnsupportedAuthOperationError:
+            actor = client.get("/api/3/actors/current")
+            return {
+                "loginid": None,
+                "email": None,
+                "name": actor.get("name"),
+                "principal_type": actor.get("@type") or actor.get("userType"),
+            }
     except Exception as exc:  # noqa: BLE001 - report, don't trace
         print(f"error: could not verify the connection: {exc}", file=sys.stderr)
         return None
@@ -124,8 +140,11 @@ def cmd_init(args: argparse.Namespace) -> int:
             print("hint: re-run with --skip-verify to print the snippets anyway", file=sys.stderr)
             return 1
         print("continuing despite failed verification (--skip-verify)", file=sys.stderr)
-    else:
+    elif me.get("loginid"):
         print(f"connected: {me.get('loginid')} <{me.get('email')}> @ {args.url}")
+    else:
+        kind = me.get("principal_type") or "API key"
+        print(f"connected: {me.get('name')} ({kind}) @ {args.url}")
 
     if args.save_env:
         path = Path(args.save_env).expanduser()

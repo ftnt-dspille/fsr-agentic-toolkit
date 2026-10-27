@@ -76,6 +76,34 @@ def test_init_saves_env_file_with_tight_mode(fake_verify, tmp_path, capsys):
     assert (env_path.stat().st_mode & 0o777) == 0o600
 
 
+def test_verify_degrades_to_the_api_key_actor(monkeypatch, capsys):
+    """Under an API key, whoami is JWT-only; init identifies the key by its
+    ApiKey actor instead of failing verification."""
+    import pyfsr.client as pc
+    from pyfsr.exceptions import UnsupportedAuthOperationError
+
+    class _Users:
+        def whoami(self):
+            raise UnsupportedAuthOperationError("auth", "APIKeyAuth")
+
+    class _FakeClient:
+        users = _Users()
+
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, path):
+            assert path == "/api/3/actors/current"
+            return {"@type": "ApiKey", "name": "lab-key"}
+
+    monkeypatch.setattr(pc, "FortiSOAR", _FakeClient)
+    rc = _run(["agent", "init", "--url", "fortisoar.example.com", "--api-key", "k"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "connected: lab-key (ApiKey)" in out
+    assert "could not verify" not in out
+
+
 def test_init_fails_closed_when_whoami_fails(monkeypatch, capsys):
     monkeypatch.setattr(agent_setup, "_verify", lambda args: None)
     rc = _run(["agent", "init", "--url", "fortisoar.example.com", "--api-key", "bad"])
