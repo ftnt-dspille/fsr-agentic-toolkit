@@ -200,6 +200,18 @@ def register_into_framework(*, offer_to_model: bool = False) -> None:
             return _spec.handler(None, **kwargs)
 
         fn.__doc__ = inspect.cleandoc(spec.description)
+        # The framework's arg gate SKIPS unknown-key rejection for any **kwargs
+        # fn (fsr_playbooks.llm.arg_gate: a VAR_KEYWORD signature reads as
+        # "accepts anything"), so a bare handler wrapper would let the model send
+        # junk keys straight through -- the connector's registry contract sweep
+        # (test_tool_sweep, invariant V) rightly fails such a tool. Advertise the
+        # input_schema's own keys as an explicit KEYWORD_ONLY signature: the gate
+        # then enforces unknown-key / required / type checks against the schema,
+        # while the real call still dispatches through **kwargs unchanged.
+        props = (spec.input_schema or {}).get("properties") or {}
+        fn.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+            [inspect.Parameter(k, inspect.Parameter.KEYWORD_ONLY, default=None)
+             for k in props])
         fw.REGISTRY[spec.name] = fw.ToolSpec(
             name=spec.name, description=spec.description, input_schema=spec.input_schema,
             fn=fn, tier=tier, confirm_mode="approve" if tier >= 2 else "auto")
