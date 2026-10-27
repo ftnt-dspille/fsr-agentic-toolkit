@@ -100,25 +100,25 @@ _ENTITY_UUID = {
 
 
 def _h_list_modules(client) -> Any:
-    """List modules, dropping fields that just echo ``type``.
+    """List modules as ``name`` (what to show a human) + ``type`` (the API id).
 
-    ``list_modules()`` returns ``{type, label, plural}`` per module, but on most
-    appliances ``plural == type`` (and often ``label`` is just the type), so the
-    full form is ~3x larger than needed and pushes the result past the MCP output
-    cap -- which truncates the *alphabetical tail* (``scenario``, ``tasks``, ...)
-    right off the list. We emit ``type`` always and ``label``/``plural`` only when
-    they carry information (differ from ``type``), keeping the payload small enough
-    that no module is silently dropped. Shape stays ``{"modules": [{"type", ...}]}``.
+    ``list_modules()`` returns ``{type, label, plural}``, but ``type`` is a slug
+    (``c_v_es``, ``mitre_sub_techniques``) and ``plural`` almost always just
+    echoes it, while ``label`` is the real display name (``CVE``, ``Sub-technique``).
+    So we surface the label as ``name`` -- the field an agent should show when a
+    user asks what modules exist -- and keep ``type`` for the calls that need the
+    id (``query_records`` etc.). ``name`` is emitted only when it differs from
+    ``type`` (many core modules already read cleanly: ``alerts``, ``incidents``),
+    which also keeps the payload under the MCP output cap so no module is dropped.
+    Shape: ``{"modules": [{"name"?, "type"}], "count"}``.
     """
     slim: list[dict[str, str]] = []
     for m in client.list_modules():
         t = m.get("type")
         entry: dict[str, str] = {"type": t}
-        label, plural = m.get("label"), m.get("plural")
-        if label and label != t:
-            entry["label"] = label
-        if plural and plural != t:
-            entry["plural"] = plural
+        name = m.get("label") or m.get("plural")
+        if name and name != t:
+            entry = {"name": name, "type": t}
         slim.append(entry)
     return {"modules": slim, "count": len(slim)}
 

@@ -628,3 +628,18 @@ def test_dispatch_map_use_case(client, monkeypatch, tmp_path):
     assert out["archetype"] == "reconcile-and-report"
     assert out["parameters"]["source_a_label"]["value"] == "FortiCloud assets"
     assert out["pending"] == ["recipients"]
+
+
+def test_list_modules_surfaces_label_as_name():
+    """A slug type (c_v_es) gets the human label as `name`; a clean type keeps just `type`."""
+    class _C:
+        def list_modules(self, refresh=False):
+            return [
+                {"type": "c_v_es", "label": "CVE", "plural": "c_v_es"},
+                {"type": "alerts", "label": "alerts", "plural": "alerts"},
+            ]
+    out = tools.dispatch(_C(), "list_modules", {})
+    mods = {m["type"]: m for m in out["modules"]}
+    assert mods["c_v_es"]["name"] == "CVE"          # ugly slug -> friendly name surfaced
+    assert "name" not in mods["alerts"]             # already clean -> no redundant name
+    assert all("plural" not in m for m in out["modules"])  # plural dropped (echoes type)
