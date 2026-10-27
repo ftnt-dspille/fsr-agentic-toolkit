@@ -10,7 +10,6 @@ from __future__ import annotations
 import itertools
 
 import pytest
-
 import workflow_scenario as W
 
 FIX = {"operations": [{"op": "update_step", "name": W.FAILING_STEP,

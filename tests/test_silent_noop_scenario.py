@@ -8,7 +8,6 @@ from __future__ import annotations
 import itertools
 
 import pytest
-
 import silent_noop_scenario as S
 
 RUN = ("run_playbook", {"playbook": S.PLAYBOOK})

@@ -100,7 +100,7 @@ HINT = (
 #: the cause, in whatever words: doubled / duplicated / prefix / already an IRI.
 _CAUSE = re.compile(
     r"doubl|duplicat|twice|prefix|already (a |the )?(full |complete )?(iri|path|url)"
-    r"|/api/3/alerts//api/3/alerts|redundant|repeated|appended", re.I)
+    r"|/api/3/alerts//api/3/alerts|redundant|repeated|appended", re.IGNORECASE)
 
 
 def _env() -> jinja2.Environment:
@@ -259,9 +259,9 @@ WORKFLOW_NAMES = ("debug_run", "repair_playbook", "verify_effect", "orient",
 
 def tool_list(arm: str) -> list[dict[str, Any]]:
     """OpenAI-shaped tools exactly as the in-product model would see them."""
-    from fsr_agentic_toolkit.workflow_tools import register_into_framework
-
     from fsr_playbooks.llm import tools as fw
+
+    from fsr_agentic_toolkit.workflow_tools import register_into_framework
 
     register_into_framework(offer_to_model=arm in ("offered", "hinted"))
     return fw.openai_tools()
