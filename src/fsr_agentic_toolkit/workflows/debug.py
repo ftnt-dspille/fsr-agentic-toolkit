@@ -73,6 +73,49 @@ def _reference_fix(template: object, by_key: dict[str, tuple[str, str]]) -> dict
     return None
 
 
+def _safe_grounded_help(connector: str, op: str, step_name: str) -> dict:
+    """grounded_help for an op, or {} if the oracle is unavailable or errors."""
+    try:
+        from fsr_playbooks.output_shape import grounded_help
+        return grounded_help(connector, op, step_name=step_name) or {}
+    except Exception:  # noqa: BLE001 -- best effort; never raise out of a diagnosis
+        return {}
+
+
+def _static_prerun_findings(run, yaml_text: str) -> int:
+    """Diagnose a draft from the grounded oracle, with no run to read.
+
+    Two sources: the gate's required_fixes (a step-output reference that would
+    render empty at run time -- precise when the library is current), and the
+    resolvable paths for every connector output the draft references (works from
+    the grounded store alone). Returns how many findings were added."""
+    produced = 0
+    try:
+        from fsr_playbooks.mcp_server.tools_verify import verify_playbook
+        fixes = [f for f in (verify_playbook(yaml_text).get("required_fixes") or [])
+                 if isinstance(f, dict)]
+    except Exception:  # noqa: BLE001 -- optional/older library; fall back to path help
+        fixes = []
+    for fx in fixes[:10]:
+        ev = run.evidence("playbook", str(fx.get("step") or "draft"),
+                          str(fx.get("message") or "")[:300])
+        run.finding(str(fx.get("message") or fx), [ev], "high")
+        produced += 1
+    by_key = _connector_ops_by_key(yaml_text)
+    for key in dict.fromkeys(_STEP_REF.findall(yaml_text)):  # referenced, order-stable, unique
+        if key not in by_key:
+            continue
+        connector, op = by_key[key]
+        help_ = _safe_grounded_help(connector, op, key)
+        if help_.get("grounded") and help_.get("suggested_references"):
+            paths = [r["path"] for r in help_["suggested_references"][:4]]
+            ev = run.evidence("step", key, f"{connector}.{op} grounded output shape")
+            run.finding(f"{key!r} is {connector}.{op}; its output resolves at: "
+                        f"{', '.join(paths)}", [ev], "medium")
+            produced += 1
+    return produced
+
+
 def _implicated(rendered: Any, error: str | None) -> bool:
     """A rendered argument value that shows up inside the runtime error (a URL,
     an id) is the argument the failing call was built from."""
@@ -129,6 +172,18 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
                    "step_diagnostics": [], "hints": []}
             unusable = False
     if unusable:
+        # No run to read (author-first flow: the draft was never run). Don't just
+        # block -- diagnose statically from the grounded oracle when we have the
+        # YAML, so debug_run is useful BEFORE the first run, not only after a
+        # failure. This is the same analysis the gate runs; surfacing it here
+        # means debug_run works whichever way the agent arrives.
+        if yaml_text and _static_prerun_findings(run, yaml_text):
+            run.data["mode"] = "static_prerun"
+            run.next(f"repair_playbook(follow_up='{run.id}')",
+                     "fix the reference(s) above, then re-gate the draft", 3)
+            run.next("run the playbook, then debug_run by its run pk",
+                     "to catch failures only a real run can show (connector/platform)", 1)
+            return run.result("partial")
         msg = (raw or {}).get("message") or (raw or {}).get("error") or "could not resolve the run"
         run.unknown(f"{(raw or {}).get('code') or 'unresolved'}: {msg}")
         run.next("list_playbook_runs(playbook=...)", "find the run to debug by pk", 1)
