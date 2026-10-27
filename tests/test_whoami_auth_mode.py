@@ -6,10 +6,9 @@ when an operation genuinely needs a JWT -- never a raw traceback it will retry.
 """
 from __future__ import annotations
 
-import pytest
+from pyfsr.exceptions import UnsupportedAuthOperationError
 
 from fsr_agentic_toolkit.verbs import tools
-from pyfsr.exceptions import UnsupportedAuthOperationError
 
 
 class _ApiKeyClient:

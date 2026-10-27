@@ -15,10 +15,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from fsr_playbooks.mcp_server import _shared
 from pyfsr.api.playbooks import PlaybooksAPI
 from pyfsr.records import RecordSet
-
-from fsr_playbooks.mcp_server import _shared
 
 from fsr_agentic_toolkit.verbs import tools
 from fsr_agentic_toolkit.workflows.verify import verify_effect
@@ -89,7 +88,7 @@ class ChainBox:
 
 
 # client.records(module) is a method on the real client; add it to the fake.
-def _records(self, module):  # noqa: ANN001
+def _records(self, module):
     return RecordSet(self, module)
 
 
