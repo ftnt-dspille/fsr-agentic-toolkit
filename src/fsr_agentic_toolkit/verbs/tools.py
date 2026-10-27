@@ -481,19 +481,47 @@ def _compiled_collection(result) -> dict[str, Any]:
     return j
 
 
+def _grounded_required_fixes(yaml_text: str) -> list[dict[str, Any]] | None:
+    """The grounded gate's required fixes for a draft, or None if the gate is
+    unavailable. This is the check that catches a reference which compiles clean
+    but renders empty at run time (a connector step's output read by a path the
+    op does not produce) -- the compiler cannot see it; the grounded oracle can."""
+    try:
+        from fsr_playbooks.mcp_server.tools_verify import verify_playbook
+    except Exception:  # noqa: BLE001 -- optional dependency / older library
+        return None
+    try:
+        v = verify_playbook(yaml_text)
+    except Exception:  # noqa: BLE001 -- never raise out of the gate
+        return None
+    return [f for f in (v.get("required_fixes") or []) if isinstance(f, dict)]
+
+
 def _h_compile_playbook_yaml(client, *, yaml_text) -> Any:
-    # Offline: compiles against the packaged catalog; `client` is unused.
+    # Offline gate: compile (structure) THEN the grounded checks (run-time
+    # reference resolvability, effects). One gate, so any path that reaches here
+    # lands on the same answer -- the agent never has to know a second tool name.
     result = _compile_playbook_yaml(yaml_text)
     out: dict[str, Any] = {"ok": bool(result.ok), "errors": _compile_errors(result)}
-    if result.ok:
-        compiled = _compiled_collection(result)
-        wfs = compiled.get("workflows") or []
-        out["collection"] = compiled.get("name")
-        out["playbooks"] = [w.get("name") for w in wfs if isinstance(w, dict)]
-        out["note"] = ("Compiled clean -- but this checks STRUCTURE only, not whether a "
-                       "step's output references resolve at run time (a playbook can compile "
-                       "clean and still render a field empty). Gate the draft with "
-                       "build_playbook before publish_playbook.")
+    if not result.ok:
+        return out  # uncompilable YAML cannot be gated further; fix structure first
+    compiled = _compiled_collection(result)
+    wfs = compiled.get("workflows") or []
+    out["collection"] = compiled.get("name")
+    out["playbooks"] = [w.get("name") for w in wfs if isinstance(w, dict)]
+    fixes = _grounded_required_fixes(yaml_text)
+    if fixes is None:
+        out["note"] = ("Compiled clean. The grounded reference check is unavailable in this "
+                       "install, so this verified STRUCTURE only; run it where fsr_playbooks "
+                       "is current before trusting a draft for publish.")
+    elif fixes:
+        out["ok"] = False
+        out["required_fixes"] = fixes
+        out["note"] = (f"Compiles, but {len(fixes)} grounded check(s) failed: these reference "
+                       "a step output by a path the op does not produce, so they compile clean "
+                       "and render empty at run time. Fix them before publish_playbook.")
+    else:
+        out["note"] = "Compiled and grounded checks clean. Safe to publish_playbook."
     return out
 
 
@@ -1856,11 +1884,12 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "compile_playbook_yaml",
-        "Compile fsr_playbooks-format playbook YAML to FortiSOAR JSON OFFLINE (no appliance "
-        "I/O) and report {ok, errors[], playbooks[]}. This is a STRUCTURE check only -- it "
-        "does not verify that step-output references resolve at run time. Fix every "
-        "non-warning error, then gate the draft with build_playbook (which runs the grounded "
-        "checks) before publish_playbook. Requires the optional fsr_playbooks package "
+        "Gate a draft OFFLINE (no appliance I/O): compile fsr_playbooks-format YAML to "
+        "FortiSOAR JSON AND run the grounded checks (whether each step-output reference "
+        "resolves at run time, plus effects). Reports {ok, errors[], playbooks[], "
+        "required_fixes[]}. ok is false if the structure is wrong OR a reference would "
+        "render empty at run time. Run this before publish_playbook and fix every "
+        "required_fix first. Requires the optional fsr_playbooks package "
         "(pip install 'pyfsr[playbooks]').",
         _obj(
             {"yaml_text": {"type": "string", "description": "The playbook collection YAML source."}},
