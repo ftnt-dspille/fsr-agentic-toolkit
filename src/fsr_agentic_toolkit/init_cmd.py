@@ -15,6 +15,7 @@ Safety env vars an agent setup may add to the snippet's ``env`` block:
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import shutil
@@ -31,7 +32,12 @@ def _server_command() -> tuple[str, list[str]]:
 
 
 def _env_block(args: argparse.Namespace) -> dict[str, str]:
-    env = {"FSR_BASE_URL": args.url, "FSR_API_KEY": args.api_key}
+    env = {"FSR_BASE_URL": args.url}
+    if getattr(args, "username", None) and getattr(args, "password", None):
+        env["FSR_USERNAME"] = args.username
+        env["FSR_PASSWORD"] = args.password
+    else:
+        env["FSR_API_KEY"] = args.api_key
     if args.no_verify_ssl:
         env["FSR_VERIFY_SSL"] = "false"
         env["FSR_SUPPRESS_INSECURE_WARNINGS"] = "true"
@@ -101,12 +107,23 @@ def _verify(args: argparse.Namespace) -> dict | None:
     from pyfsr.client import FortiSOAR
     from pyfsr.exceptions import UnsupportedAuthOperationError
 
+    use_user = bool(getattr(args, "username", None) and getattr(args, "password", None))
     try:
-        client = FortiSOAR(
-            args.url,
-            token=args.api_key,
-            verify_ssl=not args.no_verify_ssl,
-            suppress_insecure_warnings=args.no_verify_ssl,
+        client = (
+            FortiSOAR(
+                args.url,
+                username=args.username,
+                password=args.password,
+                verify_ssl=not args.no_verify_ssl,
+                suppress_insecure_warnings=args.no_verify_ssl,
+            )
+            if use_user
+            else FortiSOAR(
+                args.url,
+                token=args.api_key,
+                verify_ssl=not args.no_verify_ssl,
+                suppress_insecure_warnings=args.no_verify_ssl,
+            )
         )
         try:
             return client.users.whoami()
@@ -134,6 +151,21 @@ def _write_env_file(path: Path, args: argparse.Namespace) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    # Keep the password off argv (and out of shell history / `ps`) when we can:
+    # a bare --username reads FSR_PASSWORD from the environment, or prompts for it
+    # without echo. --password is still accepted for non-interactive use.
+    if getattr(args, "username", None) and not getattr(args, "password", None):
+        args.password = os.environ.get("FSR_PASSWORD")
+        if not args.password and sys.stdin.isatty():
+            args.password = getpass.getpass(f"FortiSOAR password for {args.username}: ")
+    has_user = bool(getattr(args, "username", None) and getattr(args, "password", None))
+    if not has_user and not getattr(args, "api_key", None):
+        print(
+            "error: provide --username (with --password, $FSR_PASSWORD, or a prompt), "
+            "or --api-key",
+            file=sys.stderr,
+        )
+        return 2
     me = _verify(args)
     if me is None:
         if not args.skip_verify:
@@ -172,7 +204,9 @@ def build_subparser(sub: argparse._SubParsersAction) -> None:
     """Wire the ``agent`` subcommands onto an existing subparsers object."""
     p_init = sub.add_parser("init", help="verify a box and print the MCP setup snippet for your coding agent")
     p_init.add_argument("--url", required=True, help="FortiSOAR base URL, e.g. fortisoar.example.com")
-    p_init.add_argument("--api-key", required=True, help="API key (Settings > API Keys on the appliance)")
+    p_init.add_argument("--username", help="FortiSOAR login id (use with --password)")
+    p_init.add_argument("--password", help="FortiSOAR password; omit to read $FSR_PASSWORD or be prompted (keeps it off argv)")
+    p_init.add_argument("--api-key", help="API key (Settings > API Keys); alternative to --username/--password")
     p_init.add_argument("--no-verify-ssl", action="store_true", help="disable TLS verification (lab boxes)")
     p_init.add_argument("--readonly", action="store_true", help="bake FSR_MCP_READONLY=1 into the snippet")
     p_init.add_argument("--save-env", metavar="PATH", help="also write the FSR_* values to this env file (mode 600)")

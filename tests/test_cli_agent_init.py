@@ -104,6 +104,30 @@ def test_verify_degrades_to_the_api_key_actor(monkeypatch, capsys):
     assert "could not verify" not in out
 
 
+def test_init_reads_password_from_env_when_flag_omitted(fake_verify, monkeypatch, tmp_path):
+    """--username without --password reads $FSR_PASSWORD, so the secret never
+    appears on argv. The saved env file carries the password it resolved."""
+    monkeypatch.setenv("FSR_PASSWORD", "from-env")
+    env_path = tmp_path / "agent.env"
+    rc = _run(["agent", "init", "--url", "fortisoar.example.com",
+               "--username", "csadmin", "--save-env", str(env_path)])
+    assert rc == 0
+    text = env_path.read_text()
+    assert "FSR_USERNAME=csadmin" in text
+    assert "FSR_PASSWORD=from-env" in text
+    assert "FSR_API_KEY" not in text
+
+
+def test_init_fails_closed_without_password_or_env(monkeypatch, capsys):
+    """A bare --username with no --password, no $FSR_PASSWORD and no tty is a
+    usage error, not a silent API-key-less run."""
+    monkeypatch.delenv("FSR_PASSWORD", raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    rc = _run(["agent", "init", "--url", "fortisoar.example.com", "--username", "csadmin"])
+    assert rc == 2
+    assert "--username" in capsys.readouterr().err
+
+
 def test_init_fails_closed_when_whoami_fails(monkeypatch, capsys):
     monkeypatch.setattr(agent_setup, "_verify", lambda args: None)
     rc = _run(["agent", "init", "--url", "fortisoar.example.com", "--api-key", "bad"])
