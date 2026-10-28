@@ -1,8 +1,8 @@
 """build_playbook: orient on the box, gate the draft, hand back the push.
 
-Chains orient (the modules' real fields and picklists, the caller's access,
+Chains survey_box (the modules' real fields and picklists, the caller's access,
 configured connectors) -> verify_playbook on the draft YAML (the pre-submit
-gate) -> the next calls: push (approval-carded) then verify_effect on a test
+gate) -> the next calls: push (approval-carded) then verify_write on a test
 record. Authoring the YAML stays with the model (compose_playbook and the
 compiler); this workflow decides whether the draft is deliverable here.
 """
@@ -16,9 +16,9 @@ def build_playbook(goal: str, yaml_text: str = "", modules: list[str] | None = N
                    ) -> WorkflowResult:
     facts = orient(goal=goal, modules=modules or [], connectors=bool(goal))
     run = WorkflowRun("build_playbook", follow_up=facts)
-    run.data["orient_id"] = facts.id
+    run.data["survey_box_id"] = facts.id
     for u in facts.unknowns:
-        run.unknown(f"orient: {u}")
+        run.unknown(f"survey_box: {u}")
     blocked_modules = [m for m, info in (facts.data.get("modules") or {}).items()
                        if (info.get("access") or {}).get("read") not in ("ok", None)]
     for m in blocked_modules:
@@ -43,7 +43,7 @@ def build_playbook(goal: str, yaml_text: str = "", modules: list[str] | None = N
         run.finding("the draft passes the pre-submit gate", [vev], "high")
         run.next("push_playbook / emit_card(card_type='playbook_offer')",
                  "deploy it (approval-carded)", 3)
-        run.next("verify_effect(module=..., uuid=<test record>, fields=...)",
+        run.next("verify_write(module=..., uuid=<test record>, fields=...)",
                  "create a test record and check the playbook changed it", 1)
     else:
         for fx in fixes[:10]:

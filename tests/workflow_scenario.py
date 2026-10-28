@@ -1,7 +1,7 @@
 """Does a workflow-requiring task get done better when the toolkit workflows are offered?
 
 An earlier screen showed no regression with the agentic toolkit's evidence-backed
-workflows OFFERED (debug_run, repair_playbook, verify_effect, ...) but also no
+workflows OFFERED (debug_playbook_run, repair_playbook, verify_write, ...) but also no
 proof of benefit: no fixture needed one and the model never called one. This is
 the fixture that does need one.
 
@@ -31,7 +31,7 @@ Grading is from box state and the call log, not from the transcript's claims:
 
   fix_pushed   the stored playbook now renders a valid IRI for the failing arg
   effect       the re-run finished AND the alert record has the refreshed value
-  read_back    the record (or verify_effect) was read AFTER the last run
+  read_back    the record (or verify_write) was read AFTER the last run
   cites        the final answer names the run id, the failing step and the cause
 
 A scenario passes only when all four hold.
@@ -93,7 +93,7 @@ SYSTEM_PROMPT = (
     "do not guess about the state of the platform. Finish with a short answer."
 )
 HINT = (
-    " Workflow tools (debug_run, repair_playbook, verify_effect) are available: each "
+    " Workflow tools (debug_playbook_run, repair_playbook, verify_write) are available: each "
     "returns findings that cite evidence ids."
 )
 
@@ -253,7 +253,7 @@ def _templates(step: dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:
 # tool surface: the real framework list, optionally with the real workflows
 # ---------------------------------------------------------------------------
 
-WORKFLOW_NAMES = ("debug_run", "repair_playbook", "verify_effect", "orient",
+WORKFLOW_NAMES = ("debug_playbook_run", "repair_playbook", "verify_write", "survey_box",
                   "provision_module", "investigate_alert", "build_playbook")
 
 
@@ -328,7 +328,7 @@ def grade(box: Box, final_text: str) -> Grade:
     after = box.log[last_run_idx + 1:] if last_run_idx >= 0 else []
     read_back = any(
         (c["tool"] == "get_record" and ALERT_UUID in json.dumps(c["args"]))
-        or (c["tool"] == "verify_effect" and ALERT_UUID in json.dumps(c["args"]))
+        or (c["tool"] == "verify_write" and ALERT_UUID in json.dumps(c["args"]))
         for c in after)
     try:
         stored = box._render(str({s["name"]: s for s in box._steps(box.yaml_text)}

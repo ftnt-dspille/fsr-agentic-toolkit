@@ -56,7 +56,7 @@ def test_workflow_path_passes_and_cites_evidence():
         def __call__(self, messages, tools):
             self.n += 1
             if self.n == 1:
-                return {"content": None, "tool_calls": [{"id": "a", "name": "debug_run",
+                return {"content": None, "tool_calls": [{"id": "a", "name": "debug_playbook_run",
                         "arguments": {"playbook_or_id": W.PLAYBOOK}}]}
             if self.n == 2:
                 import json
@@ -71,13 +71,13 @@ def test_workflow_path_passes_and_cites_evidence():
                 return {"content": None, "tool_calls": [{"id": "d", "name": "run_playbook",
                         "arguments": {"playbook": W.PLAYBOOK}}]}
             if self.n == 5:
-                return {"content": None, "tool_calls": [{"id": "e", "name": "verify_effect",
+                return {"content": None, "tool_calls": [{"id": "e", "name": "verify_write",
                         "arguments": {"module": "alerts", "uuid": W.ALERT_UUID,
                                       "fields": {W.FIELD: W.REFRESHED}}}]}
             return {"content": ANSWER + " evidence e1", "tool_calls": []}
 
     g, _, _ = W.drive(M(), "offered")
-    assert g.passed and g.workflow_calls == ["debug_run", "repair_playbook", "verify_effect"]
+    assert g.passed and g.workflow_calls == ["debug_playbook_run", "repair_playbook", "verify_write"]
     assert g.cited_evidence_id
 
 
@@ -85,7 +85,7 @@ def test_hidden_arm_does_not_advertise_workflows_and_offered_does():
     hidden = {t["function"]["name"] for t in W.tool_list("hidden")}
     offered = {t["function"]["name"] for t in W.tool_list("offered")}
     assert not hidden & set(W.WORKFLOW_NAMES)
-    assert {"debug_run", "repair_playbook", "verify_effect"} <= offered
+    assert {"debug_playbook_run", "repair_playbook", "verify_write"} <= offered
 
 
 @pytest.mark.parametrize("steps,field", [

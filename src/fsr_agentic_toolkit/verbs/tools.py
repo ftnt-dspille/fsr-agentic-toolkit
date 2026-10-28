@@ -430,6 +430,57 @@ def _h_install_connector(client, *, name=None, path=None, version=None, replace=
     return out
 
 
+# -- connector authoring (local directory, no box) ----------------------------
+# These are the primitives build_connector composes; they touch a connector
+# DIRECTORY on disk, not the appliance, so client is unused. Prefer the
+# build_connector workflow -- it scaffolds, validates and names the next call in
+# one; reach for these only when you want one step on its own.
+def _h_validate_connector(client, *, directory: str) -> Any:
+    from pathlib import Path
+
+    from fsr_playbooks.connectors import Severity, validate_connector
+
+    issues = validate_connector(Path(directory))
+    out: dict[str, Any] = {"errors": [], "warnings": []}
+    for i in issues:
+        row = {"code": i.code, "message": i.message,
+               "file": Path(i.file).name if i.file else None}
+        out["errors" if i.severity == Severity.ERROR else "warnings"].append(row)
+    out["clean"] = not out["errors"]
+    return out
+
+
+def _h_scan_connector_code(client, *, directory: str) -> Any:
+    from pathlib import Path
+
+    from fsr_playbooks.connectors import scan
+
+    findings = scan(Path(directory))
+    return {
+        "issues": [{"code": f.code, "line": f.line, "message": f.message}
+                   for f in findings],
+        "clean": not findings,
+    }
+
+
+def _h_scaffold_connector(client, *, directory: str, name: str = "",
+                          label: str = "", ops: list | None = None) -> Any:
+    from pathlib import Path
+
+    from pyfsr.connector_dev import scaffold_connector
+
+    path = Path(directory)
+    cname = name or path.name
+    kwargs: dict[str, Any] = {}
+    if label:
+        kwargs["label"] = label
+    if ops is not None:
+        kwargs["ops"] = ops
+    written = scaffold_connector(cname, path, **kwargs)
+    return {"scaffolded": cname, "directory": str(path),
+            "files": [p.name for p in written]}
+
+
 # -- playbook authoring (YAML -> box) -----------------------------------------
 def _playbooks_compiler():
     """Import the optional fsr_playbooks compiler (pyfsr[playbooks] extra)."""
@@ -1363,7 +1414,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         destructive=True,
     ),
     ToolSpec(
-        "publish",
+        "publish_module_changes",
         "For creating a module, prefer provision_module (it publishes with the post-publish settle "
         "handled, so you never sleep or poll). Use publish directly only to commit OTHER staged "
         "schema changes. It commits ALL staged schema changes appliance-wide (module "
@@ -1384,9 +1435,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
         mutating=True,
         destructive=True,
         advanced=True,
+        aliases=("publish",),
     ),
     ToolSpec(
-        "default_connector_config",
+        "get_default_connector_config",
         "Build a complete, runtime-valid default configuration for a connector -- every field's "
         "default plus the onchange-revealed sub-fields. Call this first, edit the values you need "
         "(credentials etc.), then pass the result as `config` to create_/upsert_connector_configuration.",
@@ -1398,6 +1450,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["connector"],
         ),
         _h_default_connector_config,
+        aliases=("default_connector_config",),
     ),
     ToolSpec(
         "validate_connector_config",
@@ -1518,7 +1571,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _h_last_playbook_run,
     ),
     ToolSpec(
-        "diagnose_run",
+        "diagnose_playbook_run",
         "Diff a playbook's DEFINITION (step graph) against a RUN (executed step statuses): "
         "which defined steps ran / didn't run / failed, the run's overall status + the first "
         "failing step + its error, and a one-word verdict (completed/failed/running/no_run/"
@@ -1536,6 +1589,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
             }
         ),
         _h_diagnose_run,
+        aliases=("diagnose_run",),
     ),
     ToolSpec(
         "wait_for_playbook_run",
@@ -1557,7 +1611,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _h_wait_for_playbook_run,
     ),
     ToolSpec(
-        "record_lifecycle",
+        "get_record_history",
         "Build a full change-history timeline for a record: audit events (create/update/link/"
         "comment/trigger) plus playbook executions, sorted oldest-first. Answers 'what happened "
         "to this alert and in what order?' Returns a one-line summary plus the timeline; each "
@@ -1585,9 +1639,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["entity_uuid"],
         ),
         _h_record_lifecycle,
+        aliases=("record_lifecycle",),
     ),
     ToolSpec(
-        "execution_context",
+        "get_execution_context",
         "Cross-reference a playbook run against concurrent record changes. Answers 'why did "
         "this playbook see state X when I expected state Y?' by showing what other playbooks or "
         "manual actions changed the same record during (and just before) the run's time window. "
@@ -1607,11 +1662,12 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["run_pk"],
         ),
         _h_execution_context,
+        aliases=("execution_context",),
     ),
     ToolSpec(
-        "audit_activities",
+        "list_record_activity",
         "Query the raw audit log for a record (create/update/link/unlink/comment/trigger events). "
-        "Lower-level than record_lifecycle -- use when you need the raw audit entries without the "
+        "Lower-level than get_record_history -- use when you need the raw audit entries without the "
         "execution merge, or to filter by a specific operation type. Returns {total, activities}.",
         _obj(
             {
@@ -1642,6 +1698,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["entity_uuid"],
         ),
         _h_audit_activities,
+        aliases=("audit_activities",),
     ),
     ToolSpec(
         "upsert_record",
@@ -1765,7 +1822,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         destructive=True,
     ),
     ToolSpec(
-        "schedule_audit",
+        "diagnose_schedule",
         "Health-check a schedule by name: is it enabled, does its target workflow still exist, "
         "has the cron actually fired (beat's last_run_at / total_run_count), and what did its "
         "recent playbook runs do. Returns a 'problems' list -- empty means the schedule is "
@@ -1784,9 +1841,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["name"],
         ),
         _h_schedule_audit,
+        aliases=("schedule_audit",),
     ),
     ToolSpec(
-        "map_use_case",
+        "plan_use_case",
         "Classify a free-text operational use case to a FortiSOAR archetype and fill its "
         "parameter slots. Returns the matched archetype name, a confidence + rationale, the "
         "filled vs pending parameters, and notes. Use this as the entry point when standing up "
@@ -1804,6 +1862,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["use_case"],
         ),
         _h_map_use_case,
+        aliases=("map_use_case",),
     ),
     ToolSpec(
         "whoami",
@@ -1929,6 +1988,44 @@ _TOOLS: tuple[ToolSpec, ...] = (
               "part": {"type": "integer", "description": "Page of a long section (see parts/next)."}}),
         _h_playbook_yaml_reference,
     ),
+    ToolSpec(
+        "validate_connector",
+        "[low-level building block] Run the domain static gates on a connector DIRECTORY "
+        "(no box): info.json shape, dispatch coverage, imports, class structure. Returns "
+        "{errors[], warnings[], clean}. Prefer build_connector, which runs this plus the "
+        "code-safety scan and names the next call; use this alone to re-check one edit.",
+        _obj({"directory": {"type": "string", "description": "Connector directory on disk."}},
+             ["directory"]),
+        _h_validate_connector,
+        advanced=True,
+    ),
+    ToolSpec(
+        "scan_connector_code",
+        "[low-level building block] Scan a connector's operations.py for security and "
+        "robustness problems (missing error handling, disabled TLS verification, and the "
+        "like), reading the code only -- no box and nothing is executed. Returns "
+        "{issues[], clean}. Prefer build_connector, which runs this alongside "
+        "validate_connector.",
+        _obj({"directory": {"type": "string", "description": "Connector directory on disk."}},
+             ["directory"]),
+        _h_scan_connector_code,
+        advanced=True,
+    ),
+    ToolSpec(
+        "scaffold_connector",
+        "[low-level building block] Write a gate-clean ConnectorsV2 skeleton to an empty "
+        "directory (safe request helper, dispatch, health check) via pyfsr. With ops=[...] "
+        "it stubs those operations. Prefer build_connector(scaffold={...}), which scaffolds "
+        "then immediately validates; use this alone to lay down files without validating.",
+        _obj({"directory": {"type": "string", "description": "Target directory (must be empty of connector files)."},
+              "name": {"type": "string", "description": "Machine name (defaults to the dir name)."},
+              "label": {"type": "string", "description": "Human label."},
+              "ops": {"type": "array", "items": {"type": "object"},
+                      "description": "Operations to stub: [{operation, method?, parameters?}]."}},
+             ["directory"]),
+        _h_scaffold_connector,
+        advanced=True,
+    ),
 )
 
 # The agent workflows join the same catalogue, gate and dispatch.
@@ -1936,8 +2033,15 @@ from ..workflow_tools import WORKFLOW_SPECS
 
 _TOOLS = _TOOLS + WORKFLOW_SPECS
 
-#: Registry keyed by tool name.
-REGISTRY: dict[str, ToolSpec] = {t.name: t for t in _TOOLS}
+#: Registry keyed by tool name, plus hidden back-compat aliases (former names
+#: after a rename). Advertising iterates _TOOLS, never REGISTRY, so an alias
+#: dispatches but is never listed.
+REGISTRY: dict[str, ToolSpec] = {}
+for _t in _TOOLS:
+    REGISTRY[_t.name] = _t
+    for _alias in _t.aliases:
+        REGISTRY.setdefault(_alias, _t)
+del _t
 
 
 # --------------------------------------------------------------------------- safety gate

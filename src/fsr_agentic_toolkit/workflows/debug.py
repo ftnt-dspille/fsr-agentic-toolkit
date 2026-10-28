@@ -153,7 +153,7 @@ def _failure_by_name(playbook_or_id: str) -> dict[str, Any] | None:
 
 
 def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResult:
-    run = WorkflowRun("debug_run")
+    run = WorkflowRun("debug_playbook_run")
     raw = _diagnose(playbook_or_id, yaml_text)
     unusable = not isinstance(raw, dict) or (raw.get("ok") is False and not raw.get("pb_execution"))
     code = raw.get("code") if isinstance(raw, dict) else None

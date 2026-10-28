@@ -3,8 +3,8 @@
     fsr-agentic-toolkit init --url fortisoar.example.com --api-key <key>
     fsr-agentic-toolkit mcp                         # the MCP server (stdio)
     fsr-agentic-toolkit tools                       # what the gate lets through
-    fsr-agentic-toolkit debug-run --playbook-or-id "Close Alert"
-    fsr-agentic-toolkit orient --modules alerts,heists --json
+    fsr-agentic-toolkit debug-playbook-run --playbook-or-id "Close Alert"
+    fsr-agentic-toolkit survey-box --modules alerts,heists --json
     fsr-agentic-toolkit call search_records '{"module": "alerts", "limit": 5}'
 
 Every workflow is a subcommand; its flags are the tool's arguments (objects and
@@ -60,7 +60,9 @@ def _print_result(out: Any, as_json: bool) -> int:
 
 def _add_workflow(sub: argparse._SubParsersAction, spec: Any) -> None:
     name = spec.name.replace("_", "-")
-    p = sub.add_parser(name, help=spec.description.split(". ")[0] + ".")
+    # former names stay as hidden argparse aliases after a rename
+    old = [a.replace("_", "-") for a in getattr(spec, "aliases", ())]
+    p = sub.add_parser(name, aliases=old, help=spec.description.split(". ")[0] + ".")
     props = spec.rendered_schema().get("properties") or {}
     required = set(spec.input_schema.get("required") or [])
     for arg, schema in props.items():

@@ -121,7 +121,7 @@ def test_debug_run_still_blocks_when_the_run_record_is_also_empty(monkeypatch):
 def test_debug_run_result_is_a_follow_up_handle(monkeypatch):
     monkeypatch.setattr(D, "_diagnose", lambda p, y: _diag())
     r = D.debug_run("x")
-    found, err = load_follow_up(r.id, workflow="debug_run")
+    found, err = load_follow_up(r.id, workflow="debug_playbook_run")
     assert err is None and found == r
 
 
@@ -223,7 +223,7 @@ def test_workflow_tools_register_into_the_framework_read_only():
 
     from fsr_agentic_toolkit.workflow_tools import register_into_framework
     register_into_framework()
-    for n in ("debug_run", "verify_effect"):
+    for n in ("debug_playbook_run", "verify_write"):
         assert REGISTRY[n].tier == 1 and REGISTRY[n].confirm_mode == "auto"
     assert REGISTRY["provision_module"].tier == 3
     assert REGISTRY["provision_module"].confirm_mode == "approve"
@@ -235,11 +235,11 @@ def test_workflows_are_offered_to_the_model_only_when_a_host_opts_in():
     from fsr_agentic_toolkit.workflow_tools import register_into_framework
     names = lambda: {t["name"] for t in T.anthropic_tools()}
     register_into_framework()
-    assert "debug_run" not in names()
+    assert "debug_playbook_run" not in names()
     register_into_framework(offer_to_model=True)
     try:
-        assert {"debug_run", "verify_effect"} <= names()
+        assert {"debug_playbook_run", "verify_write"} <= names()
     finally:
         register_into_framework()
-    assert "debug_run" not in names()
-    assert "debug_run" in T.REGISTRY  # still dispatchable
+    assert "debug_playbook_run" not in names()
+    assert "debug_playbook_run" in T.REGISTRY  # still dispatchable

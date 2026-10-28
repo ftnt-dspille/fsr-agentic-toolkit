@@ -20,7 +20,7 @@ agent UX, just raw FortiSOAR access.
 - ``FSR_MCP_ALLOW_TOOLS`` / ``FSR_MCP_DENY_TOOLS`` — comma-separated names or
   fnmatch globs to narrow the surface.
 - High-impact tools (``delete_record``, ``delete_module``, ``delete_schedule``,
-  ``publish``, ``create_user``, ``install_connector``) never run without
+  ``publish_module_changes``, ``create_user``, ``install_connector``) never run without
   ``confirm: true`` in their arguments.
 
 Requires the optional dependency: ``pip install 'pyfsr[mcp]'``.
@@ -243,24 +243,24 @@ fsr-agentic-toolkit drives FortiSOAR through evidence-backed WORKFLOWS. Route yo
 goal to a workflow first (workflows are listed first); reach for a low-level tool
 only when no workflow fits.
 
-- Understand a box, or a goal's modules / access / connectors -> orient (start here).
+- Understand a box, or a goal's modules / access / connectors -> survey_box (start here).
 - Create a usable custom module -> provision_module (do NOT hand-roll
-  create_module + publish + a role grant + a probe write; provision_module does all
+  create_module + publish_module_changes + a role grant + a probe write; provision_module does all
   of that, handles the post-publish settle, and verifies the caller can read/create).
-- A playbook run misbehaved -> debug_run, then repair_playbook with its result id.
-- Author a playbook -> build_playbook, then publish_playbook, then verify_effect.
-- Confirm a write actually landed -> verify_effect (reads the record back).
+- A playbook run misbehaved -> debug_playbook_run, then repair_playbook with its result id.
+- Author a playbook -> build_playbook, then publish_playbook, then verify_write.
+- Confirm a write actually landed -> verify_write (reads the record back).
 - Gather an alert's evidence -> investigate_alert.
 
 Principles:
 - Prefer ONE workflow call over reconstructing the same steps from primitives. The
   workflows handle publish-settle, retries, grants and read-back; never add your own
   sleep/poll around a publish.
-- Start from the smallest useful read (orient) and expand only on a concrete gap.
+- Start from the smallest useful read (survey_box) and expand only on a concrete gap.
   Do not repeat an identical call.
 - Results carry evidence and findings -- cite them, and separate what was verified
   from what was assumed.
-- High-impact tools (provision_module, publish, deletes) need confirm=true; tell the
+- High-impact tools (provision_module, publish_module_changes, deletes) need confirm=true; tell the
   user exactly what will change first.
 """
 

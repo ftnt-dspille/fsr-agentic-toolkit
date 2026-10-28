@@ -1,4 +1,4 @@
-"""The seven workflows as tools: one spec each, served by every surface.
+"""The eight workflows as tools: one spec each, served by every surface.
 
 The MCP server, the CLI and the SDK verbs share :mod:`fsr_agentic_toolkit.verbs.tools`'
 registry and gate; the workflows join it here. :func:`register_into_framework`
@@ -18,15 +18,24 @@ from .spec import ToolSpec, _obj
 # name -> static tier. provision_module writes schema, publishes and grants a
 # role, so it is the one that needs a human yes.
 WORKFLOW_TIERS: dict[str, int] = {
-    "debug_run": 1,
-    "verify_effect": 1,
-    "orient": 1,
+    "debug_playbook_run": 1,
+    "verify_write": 1,
+    "survey_box": 1,
     "provision_module": 3,
     "repair_playbook": 1,  # edits a draft; pushing it is a separate confirmed call
     "investigate_alert": 1,
     "build_playbook": 1,  # gates a draft; pushing it is a separate confirmed call
+    "build_connector": 1,  # scaffolds+validates locally; deploy is a separate pyfsr call
 }
 WORKFLOW_TOOLS: tuple[str, ...] = tuple(WORKFLOW_TIERS)
+
+# Former workflow names, kept as hidden dispatch aliases after a rename so saved
+# MCP calls, scripts and skills using the old name keep working. current -> olds.
+WORKFLOW_ALIASES: dict[str, tuple[str, ...]] = {
+    "debug_playbook_run": ("debug_run",),
+    "verify_write": ("verify_effect",),
+    "survey_box": ("orient",),
+}
 
 
 def _bind(client: Any) -> None:
@@ -93,12 +102,18 @@ def _build_playbook(*, goal: str, yaml_text: str = "", modules: list | None = No
     return build_playbook(goal, yaml_text=yaml_text, modules=modules)
 
 
+def _build_connector(*, directory: str, name: str = "", scaffold: dict | None = None):
+    from .workflows.connector import build_connector
+
+    return build_connector(directory, name=name, scaffold=scaffold)
+
+
 _STR = {"type": "string"}
 _STRS = {"type": "array", "items": {"type": "string"}}
 
 WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
-        "debug_run",
+        "debug_playbook_run",
         "Explain why a playbook run did what it did, with evidence. Give a playbook name (its "
         "latest failed run) or a run pk. Findings cite the run and its steps: the failing step "
         "and its error, and any step argument that does not render against the run's own vars "
@@ -110,9 +125,10 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
              ["playbook_or_id"]),
         _wf(_debug_run),
         workflow=True,
+        aliases=("debug_run",),
     ),
     ToolSpec(
-        "verify_effect",
+        "verify_write",
         "Read the box back after a write and report what actually changed. Name a record "
         "(module + uuid) and the field values the write should have set; any mismatch makes the "
         "result partial, naming the field. Use after create_record / update_record / a run.",
@@ -121,15 +137,17 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
               "assertions": {"type": "array", "items": {"type": "object"}}}),
         _wf(_verify_effect),
         workflow=True,
+        aliases=("verify_effect",),
     ),
     ToolSpec(
-        "orient",
+        "survey_box",
         "What this box has for a goal, in one call: each named module's real field names and "
         "picklist values, whether the caller can read it (and if not, which break: unpublished, "
         "role or team, with the fix), and the configured connectors matching the goal.",
         _obj({"goal": _STR, "modules": _STRS}),
         _wf(_orient),
         workflow=True,
+        aliases=("orient",),
     ),
     ToolSpec(
         "provision_module",
@@ -151,7 +169,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "repair_playbook",
-        "Fix a playbook from a debug_run diagnosis: pass the debug_run result id as follow_up "
+        "Fix a playbook from a debug_playbook_run diagnosis: pass the debug_playbook_run result id as follow_up "
         "and the YAML. Mechanical fixes are applied and re-validated (data.yaml); the rest are "
         "listed for a hand edit. Publishing the fix is a separate call.",
         _obj({"follow_up": _STR, "yaml_text": _STR}, ["follow_up", "yaml_text"]),
@@ -170,10 +188,28 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         "build_playbook",
         "Orient on the modules a playbook touches, then gate the draft YAML with "
-        "verify_playbook and hand back the next calls (publish, then verify_effect on a test "
+        "verify_playbook and hand back the next calls (publish, then verify_write on a test "
         "record). Without yaml_text it returns the facts to write the draft from.",
         _obj({"goal": _STR, "yaml_text": _STR, "modules": _STRS}, ["goal"]),
         _wf(_build_playbook),
+        workflow=True,
+    ),
+    ToolSpec(
+        "build_connector",
+        "Scaffold and/or statically validate a FortiSOAR connector directory, and say what to "
+        "fix next. With scaffold={ops:[...]} and an empty directory it drops in a gate-clean "
+        "skeleton (safe request helper, dispatch, health check). It then runs the domain gates "
+        ""
+        "code safety/robustness) and "
+        "returns each blocking issue plus the next call; re-run it after each edit. Deploying is "
+        "a separate pyfsr deploy_connector call. Needs no box until deploy.",
+        _obj({"directory": {**_STR, "description": "Connector directory (existing or to scaffold)."},
+              "name": {**_STR, "description": "Machine name when scaffolding (defaults to the dir name)."},
+              "scaffold": {"type": "object",
+                           "description": "Scaffold spec when the dir is empty: "
+                                          "{name?, label?, publisher?, ops?:[{operation, method?, parameters?}]}"}},
+             ["directory"]),
+        _wf(_build_connector),
         workflow=True,
     ),
 )

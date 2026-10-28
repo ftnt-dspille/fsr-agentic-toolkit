@@ -1,10 +1,10 @@
-"""repair_playbook: turn a debug_run diagnosis into a corrected playbook.
+"""repair_playbook: turn a debug_playbook_run diagnosis into a corrected playbook.
 
-Takes the debug_run result id (``follow_up``) and the playbook YAML. Each root
+Takes the debug_playbook_run result id (``follow_up``) and the playbook YAML. Each root
 cause the diagnosis named either gets a mechanical fix (a doubled IRI: drop the
 ``/api/3/<module>/`` prefix in front of a value that is already an IRI) or is
 reported as needing a hand edit. The repaired YAML is re-validated; pushing it
-stays a separate, approval-carded step, followed by verify_effect.
+stays a separate, approval-carded step, followed by verify_write.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def _fix_doubled_iri(yaml_text: str, template: str) -> tuple[str, str] | None:
 
 
 def repair_playbook(follow_up: str, yaml_text: str) -> WorkflowResult:
-    prior, err = load_follow_up(follow_up, workflow="debug_run")
+    prior, err = load_follow_up(follow_up, workflow="debug_playbook_run")
     if err is not None:
         run = WorkflowRun("repair_playbook")
         run.unknown(f"{err['code']}: {err['message']}")
@@ -65,6 +65,6 @@ def repair_playbook(follow_up: str, yaml_text: str) -> WorkflowResult:
     run.data["yaml"] = new_yaml
     run.next("verify_playbook(yaml_text=<data.yaml>) then update_playbook(...)",
              "push the fix (approval-carded)", 3)
-    run.next("debug_run(...) or verify_effect(...) after the next run",
+    run.next("debug_playbook_run(...) or verify_write(...) after the next run",
              "confirm the run now succeeds and has its effect", 1)
     return run.result()

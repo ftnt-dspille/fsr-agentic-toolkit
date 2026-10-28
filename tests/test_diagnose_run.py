@@ -123,12 +123,12 @@ def test_dispatch_diagnose_run():
             )
         },
     )
-    out = tools.dispatch(client, "diagnose_run", {"playbook_uuid": "u1"})
+    out = tools.dispatch(client, "diagnose_playbook_run", {"playbook_uuid": "u1"})
     assert out["verdict"] == "failed"
     assert out["failing_step"] == "Block"
     assert out["error_message"] == "boom"
     assert out["not_reached"] == []
     # The tool is registered + documented for an agent.
     spec = {t["name"]: t for t in tools.tool_schemas()}
-    assert "diagnose_run" in spec
-    assert "verdict" in (spec["diagnose_run"]["description"] or "")
+    assert "diagnose_playbook_run" in spec
+    assert "verdict" in (spec["diagnose_playbook_run"]["description"] or "")

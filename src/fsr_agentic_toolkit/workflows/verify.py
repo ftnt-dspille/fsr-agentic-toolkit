@@ -1,4 +1,4 @@
-"""verify_effect: after a write, read the box back and say what actually changed.
+"""verify_write workflow: after a write, read the box back and say what actually changed.
 
 A write tool reporting success proves nothing: the platform ignores unknown
 keys and answers 200, a picklist label can be refused after approval, a
@@ -53,7 +53,7 @@ def _read_record(module: str, uuid: str) -> tuple[dict | None, str]:
 
 def verify_effect(module: str = "", uuid: str = "", fields: dict | None = None,
                   assertions: list[dict] | None = None) -> WorkflowResult:
-    run = WorkflowRun("verify_effect")
+    run = WorkflowRun("verify_write")
     if not ((module and uuid and fields) or assertions):
         run.unknown("nothing to verify: pass module + uuid + fields, or assertions")
         return run.result("blocked")
@@ -96,7 +96,7 @@ def verify_effect(module: str = "", uuid: str = "", fields: dict | None = None,
                             f"{r.get('message')}", [ev], "high")
 
     if mismatched:
-        run.next("debug_run(...) or repair_playbook(...)",
+        run.next("debug_playbook_run(...) or repair_playbook(...)",
                  "the effect is missing; find why before retrying the write", 1)
         return run.result("partial")
     return run.result()

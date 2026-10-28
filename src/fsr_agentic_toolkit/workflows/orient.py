@@ -45,7 +45,7 @@ def _connectors(goal: str) -> dict[str, Any]:
 
 def orient(goal: str = "", modules: list[str] | None = None,
            connectors: bool = True) -> WorkflowResult:
-    run = WorkflowRun("orient")
+    run = WorkflowRun("survey_box")
     client = _shared._live_client()
     if client is None:
         run.unknown("no FortiSOAR instance is configured")

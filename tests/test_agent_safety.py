@@ -91,7 +91,7 @@ def test_destructive_tools_are_exactly_the_documented_set():
         "delete_record",
         "delete_module",
         "delete_schedule",
-        "publish",
+        "publish_module_changes",
         # privilege-raising, so confirm-gated like the deletes:
         "create_user",
         "install_connector",

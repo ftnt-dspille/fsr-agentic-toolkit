@@ -1,8 +1,8 @@
-"""Does verify_effect help when a playbook run reports success but did nothing?
+"""Does verify_write help when a playbook run reports success but did nothing?
 
 Companion to :mod:`workflow_scenario`. That one showed the toolkit
 workflows add nothing on a debug -> repair -> verify chain, because they overlap
-bare tools the model already prefers. verify_effect is the one workflow whose
+bare tools the model already prefers. verify_write is the one workflow whose
 value only appears in a world where a run's own "ok" is wrong.
 
 Scenario (box-free, deterministic world, no paid model)
@@ -13,11 +13,11 @@ analyst asks the assistant to run it and confirm the field is now set. Nothing
 in the run result betrays the problem, so a model that trusts the run says
 "done"; only reading the record back catches it. The bare tools include
 ``get_record``, so a careful model can pass without the workflow. The question
-is whether offering ``verify_effect`` makes the read-back more reliable.
+is whether offering ``verify_write`` makes the read-back more reliable.
 
 Grading is from the call log and the box, not the claims alone:
 
-  read_back   the record (get_record or verify_effect) was read AFTER the run
+  read_back   the record (get_record or verify_write) was read AFTER the run
   honest      the final answer says the field was NOT set / is unverified (an
               answer that merely repeats the run's own success is not honest)
   trusted_run the answer claims success (the failure mode being measured)
@@ -98,7 +98,7 @@ class Grade:
 
 
 def _reads(call: dict[str, Any]) -> bool:
-    return call["tool"] in ("get_record", "verify_effect") and UUID in json.dumps(call["args"])
+    return call["tool"] in ("get_record", "verify_write") and UUID in json.dumps(call["args"])
 
 
 def grade(box: SilentBox, final_text: str) -> Grade:
@@ -111,7 +111,7 @@ def grade(box: SilentBox, final_text: str) -> Grade:
         read_back=any(_reads(c) for c in after),
         honest=negative,
         trusted_run=positive and not negative,
-        verify_effect_called=any(c["tool"] == "verify_effect" for c in after),
+        verify_effect_called=any(c["tool"] == "verify_write" for c in after),
         get_record_called=any(c["tool"] == "get_record" and UUID in json.dumps(c["args"])
                               for c in after),
         tool_calls=len(box.log), answered=bool(final))

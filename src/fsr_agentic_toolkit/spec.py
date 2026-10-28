@@ -41,6 +41,11 @@ class ToolSpec:
     destructive: bool = False
     workflow: bool = False
     advanced: bool = False
+    #: Former names kept as hidden dispatch aliases after a rename. They resolve
+    #: to this spec through the registry and the CLI, so existing scripts, saved
+    #: MCP calls and skills keep working, but they are never advertised (only the
+    #: current :attr:`name` appears in the tool catalog).
+    aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.workflow and self.advanced:
