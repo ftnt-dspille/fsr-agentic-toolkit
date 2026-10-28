@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fsr-agentic-toolkit"
-version = "0.1.7"
+version = "0.1.8"
 description = "The agent layer for FortiSOAR: workflows and tools behind one safety gate, served as an MCP server, CLI, and Python API, on pyfsr and fsr-playbooks."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
-  "pyfsr>=0.28.0",
-  "fsr-playbooks>=0.8.0",
+  "pyfsr>=0.31.0",
+  "fsr-playbooks>=0.9.0",
   "mcp>=2.0,<3",
   "pydantic>=2",
 ]
