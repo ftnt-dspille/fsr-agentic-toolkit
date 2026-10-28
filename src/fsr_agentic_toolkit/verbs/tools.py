@@ -463,13 +463,32 @@ def _h_scan_connector_code(client, *, directory: str) -> Any:
     }
 
 
-def _h_scaffold_connector(client, *, directory: str, name: str = "",
-                          label: str = "", ops: list | None = None) -> Any:
+def _safe_connector_dir(directory: str):
+    """Resolve a scaffold target and refuse anything unsafe: a symlinked path
+    (symlink escape) or, when FSR_CONN_WORKSPACE is set, a path outside that
+    workspace root. Returns the resolved Path or raises ValueError."""
     from pathlib import Path
 
+    raw = Path(directory)
+    # reject if the target or any ancestor is a symlink -- check the UNRESOLVED
+    # path, since resolve() would follow (and hide) the symlink first
+    for probe in (raw, *raw.parents):
+        if probe.is_symlink():
+            raise ValueError(f"refusing to scaffold through a symlink: {probe}")
+    path = raw.resolve()
+    root = os.environ.get("FSR_CONN_WORKSPACE", "").strip()
+    if root:
+        r = Path(root).resolve()
+        if not (path == r or r in path.parents):
+            raise ValueError(f"{path} is outside the connector workspace {r}")
+    return path
+
+
+def _h_scaffold_connector(client, *, directory: str, name: str = "",
+                          label: str = "", ops: list | None = None) -> Any:
     from pyfsr.connector_dev import scaffold_connector
 
-    path = Path(directory)
+    path = _safe_connector_dir(directory)
     cname = name or path.name
     kwargs: dict[str, Any] = {}
     if label:
@@ -2025,6 +2044,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
              ["directory"]),
         _h_scaffold_connector,
         advanced=True,
+        mutating=True,  # writes files to disk, so FSR_MCP_READONLY must block it
     ),
 )
 
@@ -2072,16 +2092,22 @@ def _globs(var: str, env: dict[str, str] | None = None) -> list[str]:
 
 
 def tool_enabled(spec: ToolSpec, env: dict[str, str] | None = None) -> bool:
-    """Apply the env policy (readonly / allow / deny) to one tool."""
+    """Apply the env policy (readonly / allow / deny) to one tool.
+
+    Allow/deny patterns are matched against the current name AND every former
+    name (alias): a deny on an old name still blocks the renamed tool (so a
+    FSR_MCP_DENY_TOOLS set before a rename keeps holding, no fail-open), and an
+    allow on either name surfaces it. Deny wins over allow."""
     from fnmatch import fnmatchcase
 
     if readonly_mode(env) and spec.mutating:
         return False
+    all_names = (spec.name, *spec.aliases)
     allow = _globs("FSR_MCP_ALLOW_TOOLS", env)
-    if allow and not any(fnmatchcase(spec.name, pat) for pat in allow):
+    if allow and not any(fnmatchcase(n, pat) for pat in allow for n in all_names):
         return False
     deny = _globs("FSR_MCP_DENY_TOOLS", env)
-    return not (deny and any(fnmatchcase(spec.name, pat) for pat in deny))
+    return not (deny and any(fnmatchcase(n, pat) for pat in deny for n in all_names))
 
 
 def enabled_tools(env: dict[str, str] | None = None) -> list[ToolSpec]:

@@ -45,3 +45,20 @@ def test_an_alias_dispatches_like_the_current_name():
     out = tools.dispatch(None, "map_use_case", {})
     assert isinstance(out, dict) and "error" in out
     assert out["error"].get("type") != "UnknownTool"
+
+
+def test_deny_on_a_former_name_still_blocks_the_renamed_tool(monkeypatch):
+    # No fail-open: a deny set with the OLD name keeps holding after the rename.
+    monkeypatch.setenv("FSR_MCP_DENY_TOOLS", "publish")
+    names = {t["name"] for t in tools.tool_schemas()}
+    assert "publish_module_changes" not in names
+    # and both the new name and the alias are refused at dispatch
+    for n in ("publish_module_changes", "publish"):
+        out = tools.dispatch(None, n, {"confirm": True})
+        assert out["error"]["type"] == "ToolDisabled", n
+
+
+def test_allow_on_a_former_name_surfaces_the_renamed_tool(monkeypatch):
+    monkeypatch.setenv("FSR_MCP_ALLOW_TOOLS", "survey_box,orient")
+    names = {t["name"] for t in tools.tool_schemas()}
+    assert names == {"survey_box"}  # the alias in the pattern still selects it

@@ -89,3 +89,32 @@ def test_scaffold_connector_writes_a_gate_clean_skeleton(tmp_path):
     # what it writes passes the gates it ships with
     assert tools._h_validate_connector(None, directory=str(dest))["clean"] is True
     assert tools._h_scan_connector_code(None, directory=str(dest))["clean"] is True
+
+
+def test_scaffold_connector_is_blocked_in_readonly_mode(monkeypatch, tmp_path):
+    # It writes files, so FSR_MCP_READONLY must hide and refuse it.
+    monkeypatch.setenv("FSR_MCP_READONLY", "1")
+    assert "scaffold_connector" not in {t["name"] for t in tools.tool_schemas()}
+    out = tools.dispatch(None, "scaffold_connector", {"directory": str(tmp_path / "x")})
+    assert out["error"]["type"] == "ToolDisabled"
+    assert not (tmp_path / "x").exists()  # nothing written
+
+
+def test_scaffold_refuses_a_symlinked_target(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    out = tools.dispatch(None, "scaffold_connector", {"directory": str(link / "c")})
+    assert "error" in out and "symlink" in out["error"]["message"].lower()
+
+
+def test_scaffold_refuses_a_target_outside_the_workspace(monkeypatch, tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("FSR_CONN_WORKSPACE", str(ws))
+    out = tools.dispatch(None, "scaffold_connector", {"directory": str(tmp_path / "elsewhere")})
+    assert "error" in out and "workspace" in out["error"]["message"].lower()
+    # inside the workspace is allowed
+    ok = tools.dispatch(None, "scaffold_connector", {"directory": str(ws / "good"), "name": "good"})
+    assert ok.get("scaffolded") == "good"

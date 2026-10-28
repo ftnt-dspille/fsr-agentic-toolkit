@@ -28,7 +28,17 @@ def build_connector(directory: str, *, name: str = "",
 
     did_scaffold = False
     if scaffold is not None and not (path / "info.json").exists():
+        import os
+
         from pyfsr.connector_dev import scaffold_connector
+
+        from ..verbs.tools import _safe_connector_dir
+        if str(os.environ.get("FSR_MCP_READONLY", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            run.unknown("read-only mode (FSR_MCP_READONLY): will not scaffold files to disk")
+            run.next("re-run without FSR_MCP_READONLY to scaffold, or point at an existing "
+                     "connector directory to validate it", "scaffolding writes files")
+            return run.result("blocked")
+        path = _safe_connector_dir(str(path))  # refuse symlink/workspace escape
         spec = dict(scaffold)
         cname = spec.pop("name", None) or name or path.name
         written = scaffold_connector(cname, path, **spec)
