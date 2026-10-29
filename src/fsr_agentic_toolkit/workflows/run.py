@@ -123,11 +123,23 @@ def _cleanup(client: Any, run: WorkflowRun, report: dict[str, Any]) -> None:
     for uuid in created:
         client.playbooks.delete(uuid)
     coll = report.get("collection_uuid")
+    kept = False
     if coll:
-        client.workflow_collections.delete(coll)
+        # Only remove the collection when nothing else lives in it: a collection that
+        # already existed may hold playbooks this call never saw. Unverifiable = keep it.
+        try:
+            left = (client.workflow_collections.get(coll) or {}).get("workflows")
+            kept = left is None or len(left) > 0
+        except Exception:  # noqa: BLE001
+            kept = True
+        if not kept:
+            client.workflow_collections.delete(coll)
+    if kept:
+        run.unknown("the collection was kept because it still holds other playbooks (or could "
+                    "not be checked); only the playbook(s) this call created were deleted")
     ev = run.evidence("playbook", report.get("collection") or "collection",
-                      f"deleted {len(created)} playbook(s) and the collection")
-    run.finding("cleanup removed the playbook(s) and collection this call created", [ev], "high")
+                      f"deleted {len(created)} playbook(s)" + ("" if kept else " and the collection"))
+    run.finding("cleanup removed what this call created", [ev], "high")
     run.data["cleaned_up"] = True
 
 

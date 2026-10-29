@@ -38,8 +38,12 @@ class FakePlaybooks:
 
 
 class FakeCollections:
-    def __init__(self):
+    def __init__(self, workflows=()):
         self.deleted = []
+        self.workflows = list(workflows)
+
+    def get(self, uuid):
+        return {"workflows": self.workflows}
 
     def delete(self, uuid):
         self.deleted.append(uuid)
@@ -153,6 +157,14 @@ def test_cleanup_leaves_a_preexisting_collection_alone(monkeypatch):
     r = R.run_playbook_yaml(YAML, cleanup=True)
     assert not client.playbooks.deleted and not client.workflow_collections.deleted
     assert any("cleanup skipped" in u for u in r.unknowns)
+
+
+def test_cleanup_keeps_a_collection_that_still_holds_other_playbooks(monkeypatch):
+    client, _ = _wire(monkeypatch)
+    client.workflow_collections.workflows = ["someone-elses"]
+    r = R.run_playbook_yaml(YAML, cleanup=True)
+    assert client.playbooks.deleted == ["u1"] and not client.workflow_collections.deleted
+    assert any("collection was kept" in u for u in r.unknowns)
 
 
 def test_spec_is_a_tier2_write_not_destructive():
