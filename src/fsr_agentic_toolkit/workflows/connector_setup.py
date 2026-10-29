@@ -29,7 +29,7 @@ from fsr_playbooks.mcp_server import _shared
 from .result import WorkflowResult, WorkflowRun
 
 _ENV_NAME = re.compile(r"^FSR_SECRET_[A-Z0-9_]+$")
-_SECRETISH = re.compile(r"(pass(word|wd)?|secret|token|api[_-]?key|private[_-]?key|credential)", re.I)
+_SECRETISH = re.compile(r"(pass(word|wd)?|secret|token|api[_-]?key|private[_-]?key|credential)", re.IGNORECASE)
 _MASK = "***"
 
 

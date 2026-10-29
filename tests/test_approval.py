@@ -143,23 +143,23 @@ def _roundtrip(monkeypatch, answer):
     out = {}
 
     async def run():
-        async with create_client_server_memory_streams() as (client_streams, server_streams):
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(lambda: server.run(*server_streams, server.create_initialization_options()))
-                async with ClientSession(*client_streams, elicitation_callback=elicit) as client:
-                    await client.initialize()
-                    listed = {t.name: t for t in (await client.list_tools()).tools}
-                    read = await client.call_tool("list_modules", {})
-                    write = await client.call_tool("create_record", {"module": "alerts", "data": {"name": "x"}})
-                    out.update(listed=listed, read=read, write=write)
-                    tg.cancel_scope.cancel()
+        async with (create_client_server_memory_streams() as (client_streams, server_streams),
+                    anyio.create_task_group() as tg):
+            tg.start_soon(lambda: server.run(*server_streams, server.create_initialization_options()))
+            async with ClientSession(*client_streams, elicitation_callback=elicit) as client:
+                await client.initialize()
+                listed = {t.name: t for t in (await client.list_tools()).tools}
+                read = await client.call_tool("list_modules", {})
+                write = await client.call_tool("create_record", {"module": "alerts", "data": {"name": "x"}})
+                out.update(listed=listed, read=read, write=write)
+                tg.cancel_scope.cancel()
 
     anyio.run(run)
     return out["listed"], out["read"], out["write"], reached, prompts
 
 
 def test_end_to_end_an_approved_write_runs_and_a_read_never_prompts(monkeypatch):
-    listed, read, write, reached, prompts = _roundtrip(monkeypatch, ("accept", True))
+    listed, _read, write, reached, prompts = _roundtrip(monkeypatch, ("accept", True))
     assert listed["list_modules"].annotations.read_only_hint is True
     assert listed["create_record"].annotations.read_only_hint is False
     assert [r[0] for r in reached] == ["list_modules", "create_record"]
@@ -274,11 +274,10 @@ def _stdio_call(answer):
     async def run():
         params = StdioServerParameters(command=sys.executable,
                                        args=[str(Path(__file__).with_name("stub_mcp_server.py"))])
-        async with stdio_client(params) as (r, w):
-            async with ClientSession(r, w, elicitation_callback=elicit) as client:
-                await client.initialize()
-                out["write"] = await client.call_tool("create_record", {"module": "alerts", "data": {"name": "x"}})
-                out["read"] = await client.call_tool("list_modules", {})
+        async with stdio_client(params) as (r, w), ClientSession(r, w, elicitation_callback=elicit) as client:
+            await client.initialize()
+            out["write"] = await client.call_tool("create_record", {"module": "alerts", "data": {"name": "x"}})
+            out["read"] = await client.call_tool("list_modules", {})
 
     anyio.run(run)
     return out, asked

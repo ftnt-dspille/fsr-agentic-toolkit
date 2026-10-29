@@ -8,7 +8,6 @@ unpublished module 404s "No route found", a role without the module 403s
 from __future__ import annotations
 
 from pathlib import Path
-
 from types import SimpleNamespace
 
 import pytest

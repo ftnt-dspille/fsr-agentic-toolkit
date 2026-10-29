@@ -10,12 +10,11 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pyfsr.models._integration import ConfigSchemaField
 
 from fsr_agentic_toolkit.verbs import tools as T
 from fsr_agentic_toolkit.workflows import MemoryResultStore, set_result_store
 from fsr_agentic_toolkit.workflows import connector_setup as CS
-
-from pyfsr.models._integration import ConfigSchemaField
 
 SECRET = "s3cr3t-VALUE-9f2c"
 # The real model, not dicts: pyfsr's config_schema returns these, and treating them as dicts

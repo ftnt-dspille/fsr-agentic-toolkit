@@ -225,7 +225,7 @@ def _target_label(registry: Any, instance: str | None) -> str:
             or next((r for r in rows if r.get("default")), None)
         if row:
             return f"{row.get('instance')} ({row['base_url']})" if row.get("base_url") else str(row.get("instance"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - a label only; never block the prompt on it
         pass
     return instance or "the configured FortiSOAR box"
 

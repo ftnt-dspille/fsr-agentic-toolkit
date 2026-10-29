@@ -32,7 +32,7 @@ from typing import Any
 
 from .tools import REGISTRY, _policy_refusal
 
-_SECRETISH = re.compile(r"(pass(word|wd)?|secret|token|api[_-]?key|private[_-]?key|credential|authorization)", re.I)
+_SECRETISH = re.compile(r"(pass(word|wd)?|secret|token|api[_-]?key|private[_-]?key|credential|authorization)", re.IGNORECASE)
 _MAX_ARGS = 1600
 _MAX_BRIEF = 220
 _MASK = "***"
@@ -172,7 +172,7 @@ async def require_approval(session: Any, name: str, arguments: dict[str, Any],
         result = await asyncio.wait_for(
             session.elicit_form(message=message, requested_schema=schema, related_request_id=request_id),
             approval_timeout())
-    except asyncio.TimeoutError:
+    except TimeoutError:
         # a client that accepted the request but never answered (headless, no UI): not an approval
         return _refusal("ApprovalUnavailable",
                         f"{name} was not run: nobody answered the approval prompt within "
