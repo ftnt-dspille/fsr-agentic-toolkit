@@ -16,7 +16,9 @@ for a low-level tool only when no workflow fits.
 | Create a usable custom module | `provision_module` |
 | A playbook run misbehaved | `debug_playbook_run` → `repair_playbook` (pass its result id) |
 | Author a playbook | `build_playbook` → `publish_playbook` → `verify_write` |
+| Run a playbook from its YAML (gate, publish, trigger, wait, read the steps) | `run_playbook_yaml` - one call, do not chain the primitives |
 | Build or fix a connector | `build_connector` (scaffold + validate; edit, re-run), then pyfsr `deploy_connector` |
+| Configure a connector (credentials!) | `setup_connector` - give a **reference** to each secret, never its value; the operator sets `FSR_SECRET_*` where the server runs |
 | Confirm a write actually landed | `verify_write` |
 | Gather an alert's evidence | `investigate_alert` |
 
@@ -54,3 +56,7 @@ its own (e.g. re-running `validate_connector` after a single edit).
 - `FSR_MCP_READONLY=1` - hide and refuse every mutating tool.
 - `FSR_MCP_ALLOW_TOOLS` / `FSR_MCP_DENY_TOOLS` - comma-separated names or globs to
   narrow the surface.
+- `FSR_MCP_APPROVAL=auto|require|off` - writes are put to the human first. If a write comes
+  back `ApprovalDeclined`, the user said no: do not retry the same call, ask what they want.
+  `ApprovalUnavailable` means the client cannot ask (`require` mode) or nobody answered within
+  `FSR_MCP_APPROVAL_TIMEOUT` seconds. `ApprovalMismatch` means an approval was for a different call.

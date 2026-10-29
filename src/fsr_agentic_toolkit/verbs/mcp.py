@@ -54,6 +54,7 @@ from pyfsr.client import FortiSOAR
 from pyfsr.config import EnvConfig
 from pyfsr.instances import InstanceRegistry
 
+from .approval import require_approval, tool_hints
 from .tools import dispatch, tool_schemas
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -185,7 +186,8 @@ def _mcp_tools(registry: Any | None = None) -> list[Any]:
             props = dict(schema.get("properties") or {})
             props["instance"] = instance_prop
             schema["properties"] = props
-        tools.append(types.Tool(name=t["name"], description=t["description"], input_schema=schema))
+        tools.append(types.Tool(name=t["name"], description=t["description"], input_schema=schema,
+                                annotations=types.ToolAnnotations(**tool_hints(t["name"]))))
     if registry is not None:
         tools.append(
             types.Tool(
@@ -196,6 +198,7 @@ def _mcp_tools(registry: Any | None = None) -> list[Any]:
                     "other tool."
                 ),
                 input_schema={"type": "object", "properties": {}},
+                annotations=types.ToolAnnotations(**tool_hints(LIST_INSTANCES)),
             )
         )
     return tools
@@ -212,6 +215,19 @@ def _text_content(obj: Any) -> list[Any]:
 def _call(client: FortiSOAR, name: str, arguments: dict[str, Any] | None) -> list[Any]:
     """Dispatch one tool call against ``client`` and wrap the JSON result."""
     return _text_content(dispatch(client, name, arguments or {}))
+
+
+def _target_label(registry: Any, instance: str | None) -> str:
+    """'alias (https://host)' for the box a call will hit, shown in the approval prompt."""
+    try:
+        rows = registry.describe()
+        row = next((r for r in rows if r.get("instance") == instance), None) \
+            or next((r for r in rows if r.get("default")), None)
+        if row:
+            return f"{row.get('instance')} ({row['base_url']})" if row.get("base_url") else str(row.get("instance"))
+    except Exception:  # noqa: BLE001
+        pass
+    return instance or "the configured FortiSOAR box"
 
 
 def _route_call(registry: Any, name: str, arguments: dict[str, Any] | None) -> list[Any]:
@@ -284,6 +300,17 @@ def build_server(target: Any) -> Server:
         return types.ListToolsResult(tools=_mcp_tools(registry))
 
     async def on_call_tool(ctx: Any, params: Any) -> Any:
+        # Writes are put to the human first (see verbs/approval.py); reads go straight through.
+        gate = await require_approval(
+            ctx.session, params.name, dict(params.arguments or {}),
+            _target_label(registry, (params.arguments or {}).get("instance")),
+            request_id=getattr(ctx, "request_id", None),
+            input_responses=getattr(params, "input_responses", None),
+            request_state=getattr(params, "request_state", None))
+        if gate is not None and not isinstance(gate, dict):
+            return gate  # an InputRequiredResult: the client asks the user, then retries this call
+        if gate is not None:
+            return types.CallToolResult(content=_text_content(gate))
         return types.CallToolResult(content=_route_call(registry, params.name, params.arguments))
 
     try:

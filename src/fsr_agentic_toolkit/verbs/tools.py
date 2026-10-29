@@ -525,16 +525,35 @@ def _compile_playbook_yaml(yaml_text: str):
     return compile_yaml(yaml_text, default_db_path())
 
 
+#: Appended to the tools that persist credentials, so a model reaches for setup_connector.
+_NO_SECRETS_NOTE = (
+    " DO NOT pass passwords or API keys through this tool (they would enter the model's context): "
+    "use setup_connector, which takes a reference to a secret instead of its value."
+)
+
 def _compile_errors(result) -> list[dict[str, Any]]:
-    return [
-        {
+    out = []
+    for e in getattr(result, "errors", []):
+        row = {
             "code": str(getattr(e, "code", "")),
             "message": getattr(e, "message", str(e)),
             "path": getattr(e, "path", None),
             "severity": getattr(e, "severity", "error"),
         }
-        for e in getattr(result, "errors", [])
-    ]
+        # The compiler already knows the likely fix ("did you mean ...?"); an agent
+        # that only sees the message has to guess it.
+        for k in ("suggestion", "near"):
+            if getattr(e, k, None):
+                row[k] = getattr(e, k)
+        if "'return' outside function" in row["message"]:
+            # fsr_playbooks suggests "a bare expression/assignment or a function you then
+            # call". Measured on 8.0, neither returns anything: a code_snippet's output is
+            # what it PRINTS (code_output is null otherwise).
+            row["suggestion"] = ("a code_snippet runs at module scope, so drop `return` and "
+                                 "`print(<value>)` instead; the printed value arrives at "
+                                 "vars.steps.<step>.data.code_output")
+        out.append(row)
+    return out
 
 
 def _compiled_collection(result) -> dict[str, Any]:
@@ -552,7 +571,7 @@ def _compiled_collection(result) -> dict[str, Any]:
 
 
 def _grounded_required_fixes(yaml_text: str) -> list[dict[str, Any]] | None:
-    """The grounded gate's required fixes for a draft, or None if the gate is
+    """The grounded gate's required fixes for a playbook, or None if the gate is
     unavailable. This is the check that catches a reference which compiles clean
     but renders empty at run time (a connector step's output read by a path the
     op does not produce) -- the compiler cannot see it; the grounded oracle can."""
@@ -583,7 +602,7 @@ def _h_compile_playbook_yaml(client, *, yaml_text) -> Any:
     if fixes is None:
         out["note"] = ("Compiled clean. The grounded reference check is unavailable in this "
                        "install, so this verified STRUCTURE only; run it where fsr_playbooks "
-                       "is current before trusting a draft for publish.")
+                       "is current before trusting a playbook for publish.")
     elif fixes:
         out["ok"] = False
         out["required_fixes"] = fixes
@@ -1446,7 +1465,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
                 "poll_interval": {"type": "number", "description": "Poll cadence in seconds (default 10)."},
                 "precheck": {
                     "type": "boolean",
-                    "description": "Validate the draft before publishing (default true).",
+                    "description": "Validate the playbook before publishing (default true).",
                 },
             }
         ),
@@ -1488,7 +1507,9 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "create_connector_configuration",
-        "Create a named connector configuration (persists credentials). For a config that may "
+        "Create a named connector configuration (persists credentials)."
+        + _NO_SECRETS_NOTE
+        + " For a config that may "
         "already exist, set exist_ok=true (delegates to upsert; safe to re-run) instead of failing "
         "on a duplicate name. autofill=true (default) fills any schema-defaulted fields you omit.",
         _obj(
@@ -1513,7 +1534,9 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "update_connector_configuration",
-        "Update an existing connector configuration identified by its config_id (PUT). Same options "
+        "Update an existing connector configuration identified by its config_id (PUT)."
+        + _NO_SECRETS_NOTE
+        + " Same options "
         "as create for validation and autofill.",
         _obj(
             {
@@ -1558,7 +1581,9 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "upsert_connector_configuration",
-        "Create a named configuration, or update it in place if one already exists with the same name -- "
+        "Create a named configuration, or update it in place if one already exists with the same name."
+        + _NO_SECRETS_NOTE
+        + " It is "
         "the idempotent write safe to re-run from a deploy script. Preferred over create_connector_configuration "
         "when the config may already exist.",
         _obj(
@@ -1962,7 +1987,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "compile_playbook_yaml",
-        "Gate a draft OFFLINE (no appliance I/O): compile fsr_playbooks-format YAML to "
+        "Check a playbook's YAML OFFLINE (no appliance I/O): compile fsr_playbooks-format YAML to "
         "FortiSOAR JSON AND run the grounded checks (whether each step-output reference "
         "resolves at run time, plus effects). Reports {ok, errors[], playbooks[], "
         "required_fixes[]}. ok is false if the structure is wrong OR a reference would "
@@ -2002,7 +2027,7 @@ _TOOLS: tuple[ToolSpec, ...] = (
         "keys, variables and Jinja, routing, looping, and each step type with examples. "
         "Without topic: the overview and the list of topics. With topic (a heading or a step "
         "type such as create_record, decision, manual_input): that section, plus the step's "
-        "accepted YAML keys. Long sections come in parts: follow next. Read this before writing a playbook draft.",
+        "accepted YAML keys. Long sections come in parts: follow next. Read this before writing a playbook.",
         _obj({"topic": {"type": "string", "description": "A heading or step type; omit for the overview."},
               "part": {"type": "integer", "description": "Page of a long section (see parts/next)."}}),
         _h_playbook_yaml_reference,

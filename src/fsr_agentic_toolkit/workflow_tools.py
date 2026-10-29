@@ -1,4 +1,4 @@
-"""The eight workflows as tools: one spec each, served by every surface.
+"""The workflows as tools: one spec each, served by every surface.
 
 The MCP server, the CLI and the SDK verbs share :mod:`fsr_agentic_toolkit.verbs.tools`'
 registry and gate; the workflows join it here. :func:`register_into_framework`
@@ -22,10 +22,12 @@ WORKFLOW_TIERS: dict[str, int] = {
     "verify_write": 1,
     "survey_box": 1,
     "provision_module": 3,
-    "repair_playbook": 1,  # edits a draft; pushing it is a separate confirmed call
+    "repair_playbook": 1,  # edits a playbook's YAML; pushing it is a separate confirmed call
     "investigate_alert": 1,
-    "build_playbook": 1,  # gates a draft; pushing it is a separate confirmed call
+    "build_playbook": 1,  # checks a playbook's YAML; pushing it is a separate confirmed call
     "build_connector": 1,  # scaffolds+validates locally; deploy is a separate pyfsr call
+    "run_playbook_yaml": 2,  # publishes and runs a playbook; deletes only what it created
+    "setup_connector": 2,  # installs/configures a connector; secrets by reference only
 }
 WORKFLOW_TOOLS: tuple[str, ...] = tuple(WORKFLOW_TIERS)
 
@@ -108,6 +110,27 @@ def _build_connector(*, directory: str, name: str = "", scaffold: dict | None = 
     return build_connector(directory, name=name, scaffold=scaffold)
 
 
+def _run_playbook_yaml(*, yaml_text: str, playbook: str = "", inputs: dict | None = None,
+                  env: dict | None = None, record_uuid: str = "", module: str = "",
+                  answers: dict | None = None, timeout: float = 120,
+                  overwrite_changed: bool = False, cleanup: bool = False):
+    from .workflows.run import run_playbook_yaml
+
+    return run_playbook_yaml(yaml_text, playbook=playbook, inputs=inputs, env=env,
+                              record_uuid=record_uuid, module=module, answers=answers,
+                        timeout=timeout, overwrite_changed=overwrite_changed, cleanup=cleanup)
+
+
+def _setup_connector(*, connector: str, config_name: str = "Default", fields: dict | None = None,
+                     secrets: dict | None = None, version: str = "", make_default: bool = False,
+                     install: bool = False, check_only: bool = False, healthcheck: bool = True):
+    from .workflows.connector_setup import setup_connector
+
+    return setup_connector(connector, config_name=config_name, fields=fields, secrets=secrets,
+                           version=version, make_default=make_default, install=install,
+                           check_only=check_only, healthcheck=healthcheck)
+
+
 _STR = {"type": "string"}
 _STRS = {"type": "array", "items": {"type": "string"}}
 
@@ -187,9 +210,9 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "build_playbook",
-        "Orient on the modules a playbook touches, then gate the draft YAML with "
+        "Orient on the modules a playbook touches, then check the playbook YAML with "
         "verify_playbook and hand back the next calls (publish, then verify_write on a test "
-        "record). Without yaml_text it returns the facts to write the draft from.",
+        "record). Without yaml_text it returns the facts to write the playbook from.",
         _obj({"goal": _STR, "yaml_text": _STR, "modules": _STRS}, ["goal"]),
         _wf(_build_playbook),
         workflow=True,
@@ -210,6 +233,61 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
                                           "{name?, label?, publisher?, ops?:[{operation, method?, parameters?}]}"}},
              ["directory"]),
         _wf(_build_connector),
+        workflow=True,
+    ),
+    ToolSpec(
+        "run_playbook_yaml",
+        "Run a playbook from its YAML in ONE call: compile + grounded gate, publish, trigger, "
+        "wait, and read back every step's result. Do NOT chain compile_playbook_yaml, "
+        "publish_playbook, schedule_playbook, trigger_schedule_now and wait_for_playbook_run by "
+        "hand. A failed gate deploys nothing; a failed run comes back with its diagnosis "
+        "(debug_playbook_run) attached. cleanup=true deletes the collection and playbooks THIS "
+        "call created (never ones that already existed), for throwaway probes. For a playbook "
+        "with a manual_input/approval gate pass answers={<prompt title or variable>: <value>}; "
+        "for a record-scoped trigger pass record_uuid + module.",
+        _obj({"yaml_text": {**_STR, "description": "The playbook collection YAML source."},
+              "playbook": {**_STR, "description": "Which playbook to run when the YAML holds several."},
+              "inputs": {"type": "object", "description": "Sent as vars.inputs on the run."},
+              "env": {"type": "object",
+                      "description": "Top-level trigger values; fills vars.input.params for a "
+                                     "start step that declares inputVariables."},
+              "record_uuid": _STR, "module": _STR,
+              "answers": {"type": "object"},
+              "timeout": {"type": "number", "description": "Seconds to wait for the run (default 120)."},
+              "overwrite_changed": {"type": "boolean",
+                                    "description": "Discard live UI-edited steps the YAML lacks."},
+              "cleanup": {"type": "boolean"}}, ["yaml_text"]),
+        _wf(_run_playbook_yaml),
+        mutating=True,
+        workflow=True,
+    ),
+    ToolSpec(
+        "setup_connector",
+        "Configure a connector in ONE call: (install it), save a named configuration, and "
+        "healthcheck it. SECRETS NEVER GO THROUGH YOU: put plain values (server URL, port, "
+        "verify_ssl) in `fields`, and for each password/API-key field give a REFERENCE in "
+        "`secrets`, e.g. secrets={'api_key': {'env': 'FSR_SECRET_VT_KEY'}}. The operator sets "
+        "that variable where the MCP server runs; this tool reads it and sends it straight to "
+        "FortiSOAR. A literal value for a secret field is refused. Only variables named "
+        "FSR_SECRET_* resolve; {'file': '<name>'} reads a file inside $FSR_SECRETS_DIR. The "
+        "result names where each secret came from and never contains it. check_only=true "
+        "validates the fields and resolves the references without writing. install=true "
+        "installs from Content Hub when the connector is missing. A configuration with the "
+        "same config_name is overwritten, and the result says so.",
+        _obj({"connector": {**_STR, "description": "Connector machine name, e.g. virustotal."},
+              "config_name": {**_STR, "description": "Name of this configuration (default 'Default')."},
+              "fields": {"type": "object", "description": "Plain, NON-secret values by field name."},
+              "secrets": {"type": "object",
+                          "description": "Secret fields by name, each a reference: "
+                                         "{'env': 'FSR_SECRET_<NAME>'} or {'file': '<name>'}. Never a value."},
+              "version": _STR,
+              "make_default": {"type": "boolean"},
+              "install": {"type": "boolean", "description": "Install from Content Hub if missing."},
+              "check_only": {"type": "boolean", "description": "Validate and resolve; write nothing."},
+              "healthcheck": {"type": "boolean", "description": "Check reachability after saving (default true)."}},
+             ["connector"]),
+        _wf(_setup_connector),
+        mutating=True,
         workflow=True,
     ),
 )

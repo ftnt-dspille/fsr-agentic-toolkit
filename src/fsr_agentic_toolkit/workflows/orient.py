@@ -29,18 +29,28 @@ def _module_meta(client: Any, module: str) -> tuple[dict | None, int | None]:
     return (members[0] if members else None), status
 
 
-def _connectors(goal: str) -> dict[str, Any]:
-    from fsr_playbooks.mcp_server.tools_connector_discovery import (
-        list_configured_connectors,
-    )
-    out = list_configured_connectors(probe=True)
-    if goal:
-        try:
-            from fsr_playbooks.mcp_server.tools_find import find
-            out = {**out, "actions": find(kind="action", query=goal)}
-        except Exception as exc:  # noqa: BLE001
-            out = {**out, "actions_error": repr(exc)}
-    return out
+_STOP = frozenset({"a", "an", "and", "the", "to", "of", "on", "in", "for", "with", "when", "then",
+                  "send", "get", "create", "make", "new", "from", "that", "this", "is", "it"})
+
+
+def _connectors(client: Any, goal: str) -> dict[str, Any]:
+    """Connectors with a saved configuration on THIS box, read through the bound client.
+
+    The library's own lister builds its client from FSR_BASE_URL, so on a multi-instance
+    server it answered for whichever box the environment named (or none), and healthchecked
+    every connector serially (50-80s). One paged listing is ~6s and answers for the
+    instance the caller asked about. Health is not probed here: ``healthcheck_connector``
+    does that for the few the caller picks."""
+    rows = []
+    for c in client.connectors.list_configured():
+        if (c.config_count or 0) > 0:
+            rows.append({"name": c.name, "label": c.label, "version": c.version,
+                         "config_count": c.config_count, "status": c.status})
+    words = {w for w in (goal or "").lower().replace("-", " ").split() if len(w) > 2 and w not in _STOP}
+    matches = [r["name"] for r in rows
+               if words & set(f"{r['name']} {r['label'] or ''}".lower().replace("_", " ")
+                              .replace("-", " ").split())]
+    return {"connectors": rows, "matches": matches}
 
 
 def orient(goal: str = "", modules: list[str] | None = None,
@@ -100,22 +110,23 @@ def orient(goal: str = "", modules: list[str] | None = None,
 
     if connectors:
         try:
-            out = _connectors(goal)
-            rows = out.get("connectors") or out.get("configured") or []
-            names = [r.get("name") if isinstance(r, dict) else str(r) for r in rows]
+            out = _connectors(client, goal)
+            rows = out["connectors"]
+            names = [r["name"] for r in rows]
             ev = run.evidence("op", "configured connectors", ", ".join(map(str, names))[:500])
-            healthy = [r.get("name") for r in rows if isinstance(r, dict)
-                       and str(r.get("status") or r.get("health") or "").lower()
-                       in ("available", "ok", "connected")]
-            run.finding(f"{len(names)} connectors configured; healthy: "
-                        f"{', '.join(map(str, healthy)) or 'none reported'}", [ev], "medium")
-            if goal and isinstance(out.get("actions"), dict):
-                acts = out["actions"].get("results") or out["actions"].get("actions") or []
-                if acts:
-                    aev = run.evidence("op", f"actions for {goal!r}", str(acts)[:500])
-                    run.finding(f"{len(acts)} configured actions match {goal!r}", [aev], "medium")
-                else:
-                    run.unknown(f"no configured, healthy action matches {goal!r}")
+            run.finding(f"{len(names)} connectors have a saved configuration on this box "
+                        "(health not probed)", [ev], "high")
+            if goal and out["matches"]:
+                mev = run.evidence("op", f"connectors matching {goal!r}", ", ".join(out["matches"]))
+                run.finding(f"configured connectors whose name or label matches the goal: "
+                            f"{', '.join(out['matches'])}", [mev], "medium")
+                run.next(f"healthcheck_connector(connector='{out['matches'][0]}')",
+                         "confirm the connector you will use is reachable", 1)
+                run.next(f"list_connector_operations(connector='{out['matches'][0]}')",
+                         "the operations it offers, read live from this box", 1)
+            elif goal:
+                run.unknown(f"no configured connector's name or label matches {goal!r}; "
+                            "list_connectors shows everything installed")
             run.data["connectors"] = out
         except Exception as exc:  # noqa: BLE001
             run.unknown(f"connectors could not be listed: {exc}")

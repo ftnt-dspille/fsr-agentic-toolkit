@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from types import SimpleNamespace
+
 import pytest
 from fsr_playbooks.mcp_server import _shared
 
@@ -130,8 +132,9 @@ def box(monkeypatch):
     b = FakeBox()
     monkeypatch.setattr(_shared, "_live_client", lambda: b)
     monkeypatch.setattr(_shared, "live_request_with_reauth", b.request)
-    monkeypatch.setattr(O, "_connectors", lambda goal: {"connectors": [
-        {"name": "virustotal", "status": "Available"}]})
+    monkeypatch.setattr(O, "_connectors", lambda client, goal: {
+        "connectors": [{"name": "virustotal", "status": "Completed"}],
+        "matches": ["virustotal"] if "ip" in goal.split() else []})
     from fsr_playbooks.mcp_server import tools_verify
     monkeypatch.setattr(tools_verify, "_LIVE_MODULES", {})
     return b
@@ -202,7 +205,9 @@ def test_orient_reports_fields_access_and_connectors(box):
     assert "heists has 5 fields" in claims and "codename" in claims
     assert "can read heists" in claims
     assert "cannot read staged_only: unpublished" in claims
-    assert "1 connectors configured; healthy: virustotal" in claims
+    assert "1 connectors have a saved configuration on this box (health not probed)" in claims
+    assert "whose name or label matches the goal: virustotal" in claims
+    assert any(n.action.startswith("healthcheck_connector(connector='virustotal')") for n in r.next)
     assert r.data["modules"]["heists"]["access"]["read"] == "ok"
 
 
@@ -301,3 +306,18 @@ def test_build_without_the_module_on_the_box_is_not_ready(box):
 def test_build_without_a_draft_points_at_the_yaml_reference(box):
     build = build_playbook("plan the job", modules=["heists"])
     assert any(n.action == "playbook_yaml_reference()" for n in build.next)
+
+
+class _Conn:
+    def __init__(self, name, label, n, status="Completed"):
+        self.name, self.label, self.version, self.config_count, self.status = name, label, "1", n, status
+
+
+def test_survey_lists_the_bound_clients_connectors_not_the_environments():
+    """Regression: the library lister read FSR_BASE_URL, so a multi-instance server
+    answered for the wrong box. The listing must come from the client it is handed."""
+    client = SimpleNamespace(connectors=SimpleNamespace(list_configured=lambda: [
+        _Conn("smtp", "SMTP", 1), _Conn("imap", "IMAP", 0), _Conn("virustotal", "VirusTotal", 2)]))
+    out = O.__dict__["_connectors"](client, "send an email with smtp")
+    assert [r["name"] for r in out["connectors"]] == ["smtp", "virustotal"]  # unconfigured imap dropped
+    assert out["matches"] == ["smtp"]

@@ -40,7 +40,7 @@ playbooks:
   - name: Unique Name
     description: optional
     tag: optional
-    is_active: true                    # default true; set false for a disabled draft
+    is_active: true                    # default true; set false for a disabled playbook
     owners: [TeamA, TeamB]            # restrict who can run it (optional)
     parameters:                       # names (+ optional types) for the
       hostname: string                # compiler's type checks ONLY -- runtime
@@ -722,9 +722,16 @@ After the operator submits, form fields are read at
   type: code_snippet
   code: |
     result = {"ip": "{{ vars.input.params.ip }}", "blocked": True}
-    return result
+    print(result)
   config: "python-runner"    # optional
 ```
+
+**A snippet's output is what it prints.** The body runs at module scope, so a
+top-level `return` fails with `'return' outside function`. A `result = ...`
+variable, a trailing expression and a function call that is not printed all
+give a `null` `code_output`. Print the value as the last thing the snippet does;
+a printed dict arrives downstream as an object at
+`vars.steps.<name>.data.code_output` (measured on 8.0).
 
 **Sandbox restrictions.** The FSR code-snippet sandbox bans certain
 Python names -- accessing them fails at runtime with "Uses of [...] is
@@ -747,7 +754,8 @@ is resolved by the template engine first:
   type: code_snippet
   code: |
     score = {{ vars.steps.Lookup.data.score | tojson }}
-    return {"risk": "high"} if score > 70 else {"risk": "low"}
+    risk = "high" if score > 70 else "low"
+    print({"risk": risk})
 ```
 
 **`| tojson` boolean pitfall.** Applying `| tojson` to a whole step

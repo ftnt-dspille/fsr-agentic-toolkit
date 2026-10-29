@@ -83,11 +83,11 @@ def _safe_grounded_help(connector: str, op: str, step_name: str) -> dict:
 
 
 def _static_prerun_findings(run, yaml_text: str) -> int:
-    """Diagnose a draft from the grounded oracle, with no run to read.
+    """Diagnose a playbook that has not run yet, from the grounded oracle, with no run to read.
 
     Two sources: the gate's required_fixes (a step-output reference that would
     render empty at run time -- precise when the library is current), and the
-    resolvable paths for every connector output the draft references (works from
+    resolvable paths for every connector output the playbook references (works from
     the grounded store alone). Returns how many findings were added."""
     produced = 0
     try:
@@ -97,7 +97,7 @@ def _static_prerun_findings(run, yaml_text: str) -> int:
     except Exception:  # noqa: BLE001 -- optional/older library; fall back to path help
         fixes = []
     for fx in fixes[:10]:
-        ev = run.evidence("playbook", str(fx.get("step") or "draft"),
+        ev = run.evidence("playbook", str(fx.get("step") or "playbook"),
                           str(fx.get("message") or "")[:300])
         run.finding(str(fx.get("message") or fx), [ev], "high")
         produced += 1
@@ -172,7 +172,7 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
                    "step_diagnostics": [], "hints": []}
             unusable = False
     if unusable:
-        # No run to read (author-first flow: the draft was never run). Don't just
+        # No run to read (author-first flow: the playbook was never run). Don't just
         # block -- diagnose statically from the grounded oracle when we have the
         # YAML, so debug_run is useful BEFORE the first run, not only after a
         # failure. This is the same analysis the gate runs; surfacing it here
@@ -180,7 +180,7 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
         if yaml_text and _static_prerun_findings(run, yaml_text):
             run.data["mode"] = "static_prerun"
             run.next(f"repair_playbook(follow_up='{run.id}')",
-                     "fix the reference(s) above, then re-gate the draft", 3)
+                     "fix the reference(s) above, then re-check the playbook", 3)
             run.next("run the playbook, then debug_run by its run pk",
                      "to catch failures only a real run can show (connector/platform)", 1)
             return run.result("partial")

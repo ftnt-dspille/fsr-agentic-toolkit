@@ -89,10 +89,28 @@ def _copilot_snippet(args: argparse.Namespace) -> str:
     return "# .vscode/mcp.json (VS Code / GitHub Copilot agent mode)\n" + json.dumps(cfg, indent=2)
 
 
+def _toml_str(value: str) -> str:
+    return json.dumps(value)  # a JSON string is a valid TOML basic string
+
+
+def _codex_snippet(args: argparse.Namespace) -> str:
+    command, cmd_args = _server_command()
+    lines = ["# ~/.codex/config.toml (or: codex mcp add fortisoar --env KEY=VALUE -- <command> <args>)",
+             "[mcp_servers.fortisoar]",
+             f"command = {_toml_str(command)}"]
+    if cmd_args:
+        lines.append("args = [" + ", ".join(_toml_str(a) for a in cmd_args) + "]")
+    lines.append("")
+    lines.append("[mcp_servers.fortisoar.env]")
+    lines += [f"{k} = {_toml_str(v)}" for k, v in _env_block(args).items()]
+    return "\n".join(lines)
+
+
 _SNIPPETS = {
     "claude-code": _claude_code_snippet,
     "opencode": _opencode_snippet,
     "copilot": _copilot_snippet,
+    "codex": _codex_snippet,
 }
 
 
@@ -192,11 +210,53 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(
         "\nsafety: add FSR_MCP_READONLY=1 to the env block for a read-only surface, "
         "or FSR_MCP_ALLOW_TOOLS/FSR_MCP_DENY_TOOLS to narrow it. Destructive tools "
-        "always need confirm=true."
+        "always need confirm=true. Writes ask the user to approve first when the client "
+        "supports it (FSR_MCP_APPROVAL=auto|require|off). For Claude Code, "
+        "`fsr-agentic-toolkit permissions` prints matching allow/ask rules."
     )
     from .verbs.mcp import OPERATING_GUIDE
 
     print("\n--- how to drive it ---\n" + OPERATING_GUIDE)
+    return 0
+
+
+def claude_permissions(server: str = "fortisoar") -> dict:
+    """Claude Code ``permissions`` rules derived from the tool registry: every read is allowed,
+    every write asks in the terminal. A write tool added later is on neither list, so it
+    prompts by default. The server's own approval prompt (verbs/approval.py) works in any MCP
+    client; these rules are the deterministic Claude Code layer on top."""
+    from .verbs.mcp import LIST_INSTANCES
+    from .verbs.tools import enabled_tools
+
+    prefix = f"mcp__{server}__"
+    tools = enabled_tools({})
+    allow = [prefix + t.name for t in tools if not t.mutating] + [prefix + LIST_INSTANCES]
+    ask = [prefix + t.name for t in tools if t.mutating]
+    return {"permissions": {"allow": sorted(allow), "ask": sorted(ask)}}
+
+
+def merge_permissions(existing: dict, new: dict) -> dict:
+    """``existing`` settings with ``new``'s allow/ask rules added; nothing of theirs removed."""
+    out = json.loads(json.dumps(existing))
+    perms = out.setdefault("permissions", {})
+    for key in ("allow", "ask"):
+        have = list(perms.get(key) or [])
+        perms[key] = have + [r for r in new["permissions"][key] if r not in have]
+    return out
+
+
+def cmd_permissions(args: argparse.Namespace) -> int:
+    new = claude_permissions(args.server)
+    if not args.write:
+        print("# .claude/settings.json (project) or ~/.claude/settings.json: merge the 'permissions' key")
+        print(json.dumps(new, indent=2))
+        return 0
+    path = Path(args.write).expanduser()
+    existing = json.loads(path.read_text()) if path.exists() else {}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(merge_permissions(existing, new), indent=2) + "\n")
+    print(f"merged {len(new['permissions']['ask'])} ask rules and "
+          f"{len(new['permissions']['allow'])} allow rules into {path}")
     return 0
 
 
@@ -214,4 +274,10 @@ def build_subparser(sub: argparse._SubParsersAction) -> None:
     p_init.add_argument("--claude-code", action="store_true", help="print the Claude Code .mcp.json snippet (default)")
     p_init.add_argument("--opencode", action="store_true", help="print the OpenCode opencode.json snippet")
     p_init.add_argument("--copilot", action="store_true", help="print the VS Code / Copilot .vscode/mcp.json snippet")
+    p_init.add_argument("--codex", action="store_true", help="print the Codex ~/.codex/config.toml snippet")
     p_init.set_defaults(func=cmd_init)
+
+    p_perm = sub.add_parser("permissions", help="print (or merge) Claude Code rules: reads allowed, writes ask")
+    p_perm.add_argument("--server", default="fortisoar", help="the MCP server name in your config (default fortisoar)")
+    p_perm.add_argument("--write", metavar="PATH", help="merge into this settings.json instead of printing")
+    p_perm.set_defaults(func=cmd_permissions)

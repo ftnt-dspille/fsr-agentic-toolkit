@@ -30,6 +30,7 @@ def test_the_workflows_lead_the_surface():
     assert set(lead) == {
         "debug_playbook_run", "verify_write", "survey_box", "provision_module",
         "repair_playbook", "investigate_alert", "build_playbook", "build_connector",
+        "run_playbook_yaml", "setup_connector",
     }
     # they occupy the front of the list, uninterrupted
     names = [t.name for t in tools.enabled_tools()]
