@@ -29,7 +29,7 @@ hidden from its model until the host opts in.
 | `verify_write` | read | What actually changed on a record versus what was expected |
 | `investigate_alert` | read | Alert evidence, indicators, and the enrichment lookups available |
 | `run_playbook_yaml` | write | Gate, publish, trigger, wait and read back a playbook from its YAML in one call; a failed run returns with its diagnosis; `cleanup=true` removes only what the call created |
-| `setup_connector` | write | Install, configure and healthcheck a connector. Secrets are passed as references (`{"env": "FSR_SECRET_<CONNECTOR>_<FIELD>"}`, usable only for that connector), never as values, and the result never contains one. `install=true` also needs `confirm_install=true` |
+| `setup_connector` | write | Install, configure and healthcheck a connector. Secrets are passed as references (`{"env": "FSR_SECRET_<CONNECTOR>__<FIELD>"}`, usable only for that connector), never as values, and the result never contains one. `install=true` also needs `confirm_install=true` |
 | `provision_module` | write, confirm | Create, publish, grant roles, then prove read and create work |
 
 Each one returns a `WorkflowResult`: findings with evidence ids, unknowns, next

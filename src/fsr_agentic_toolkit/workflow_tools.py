@@ -266,10 +266,10 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "Configure a connector in ONE call: (install it), save a named configuration, and "
         "healthcheck it. SECRETS NEVER GO THROUGH YOU: put plain values (server URL, port, "
         "verify_ssl) in `fields`, and for each password/API-key field give a REFERENCE in "
-        "`secrets`, e.g. secrets={'api_key': {'env': 'FSR_SECRET_VIRUSTOTAL_API_KEY'}}. The operator sets "
+        "`secrets`, e.g. secrets={'api_key': {'env': 'FSR_SECRET_VIRUSTOTAL__API_KEY'}}. The operator sets "
         "that variable where the MCP server runs; this tool reads it and sends it straight to "
         "FortiSOAR. A literal value for a secret field is refused. Only variables named "
-        "FSR_SECRET_<CONNECTOR>_* resolve, and only for that connector; {'file': '<connector>/<name>'} "
+        "FSR_SECRET_<CONNECTOR>__* resolve, and only for that connector; {'file': '<connector>/<name>'} "
         "reads a file inside $FSR_SECRETS_DIR. The "
         "result names where each secret came from and never contains it. check_only=true "
         "validates the fields and resolves the references without writing. install=true "
@@ -280,7 +280,7 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
               "fields": {"type": "object", "description": "Plain, NON-secret values by field name."},
               "secrets": {"type": "object",
                           "description": "Secret fields by name, each a reference: "
-                                         "{'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'} or {'file': '<name>'}. Never a value."},
+                                         "{'env': 'FSR_SECRET_<CONNECTOR>__<FIELD>'} or {'file': '<name>'}. Never a value."},
               "version": _STR,
               "make_default": {"type": "boolean"},
               "install": {"type": "boolean", "description": "Install from Content Hub if missing (also needs confirm_install=true)."},

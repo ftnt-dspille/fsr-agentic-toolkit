@@ -5,7 +5,7 @@ The model supplies the connector, a configuration name, the plain (non-secret) f
 and a *reference* for each secret field. The reference is resolved here, in the server's own
 process, and the value goes straight to FortiSOAR:
 
-- ``{"env": "FSR_SECRET_<CONNECTOR>_<FIELD>"}`` - a variable the operator set where the server
+- ``{"env": "FSR_SECRET_<CONNECTOR>__<FIELD>"}`` - a variable the operator set where the server
   runs. Only names with the ``FSR_SECRET_`` prefix resolve, so the model cannot ask for an
   arbitrary variable of the host (cloud keys, tokens) to be copied into a configuration.
 - ``{"file": "<connector>/<name>"}`` - a file inside ``$FSR_SECRETS_DIR`` (trailing newline
@@ -13,7 +13,7 @@ process, and the value goes straight to FortiSOAR:
   references are off.
 
 A secret is bound to the connector it was set up for: the variable name must carry the
-connector (``FSR_SECRET_VIRUSTOTAL_API_KEY`` for ``virustotal``), and a file must sit under a
+connector (``FSR_SECRET_VIRUSTOTAL__API_KEY`` for ``virustotal``), and a file must sit under a
 folder or name starting with the connector. A reference for another connector is refused, so a
 model cannot point one service's key at a different connector. The operator can also pin where
 secrets may be sent with ``FSR_SECRET_ALLOWED_HOSTS`` (comma-separated host names, suffix
@@ -66,12 +66,25 @@ def _slug(connector: str) -> str:
 
 
 _HOST_FIELD = re.compile(r"(server|url|host|address|endpoint|domain|base)", re.IGNORECASE)
+# anything that reads as a place to connect to, whatever the field is called
+_LOOKS_LIKE_DEST = re.compile(r"^(?:[a-z][a-z0-9+.-]*://\S+|[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:/\S*)?|\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)$",
+                              re.IGNORECASE)
 
 
 def _host_of(value: Any) -> str:
+    """The host a value would connect to, or ``""`` when it cannot be read with certainty.
+    Anything with userinfo, a backslash, whitespace or control characters is unreadable on
+    purpose: parsers disagree about those, and a disagreement is how an allow-list is bypassed."""
+    from urllib.parse import urlsplit
+
     text = str(value).strip()
-    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text, flags=re.IGNORECASE)
-    return re.split(r"[/:?#]", text.rsplit("@", 1)[-1], maxsplit=1)[0].lower()
+    if not text or "@" in text or "\\" in text or any(c.isspace() or ord(c) < 32 for c in text):
+        return ""
+    try:
+        host = urlsplit(text if "://" in text else "//" + text).hostname or ""
+        return host.encode("idna").decode("ascii").lower()
+    except (ValueError, UnicodeError):
+        return ""
 
 
 def _allowed_hosts() -> list[str]:
@@ -79,27 +92,33 @@ def _allowed_hosts() -> list[str]:
 
 
 def _destinations(fields: dict, schema: dict[str, dict]) -> dict[str, str]:
-    """Field name -> host for every field that says where the connector will talk to."""
-    return {k: h for k, v in fields.items()
-            if isinstance(v, str) and (_HOST_FIELD.search(k) or (schema.get(k) or {}).get("type") == "url")
-            for h in [_host_of(v)] if h}
+    """Field name -> host (``""`` when unreadable) for every field that says where the
+    connector will talk to: by name or schema type, or by looking like a URL or host."""
+    out: dict[str, str] = {}
+    for k, v in fields.items():
+        if not isinstance(v, str):
+            continue
+        named = bool(_HOST_FIELD.search(k)) or (schema.get(k) or {}).get("type") == "url"
+        if named or _LOOKS_LIKE_DEST.match(v.strip()):
+            out[k] = _host_of(v)
+    return out
 
 
 def _resolve_secret(ref: Any, connector: str = "") -> tuple[str, str]:
     """``(value, where_it_came_from)`` for a secret reference. Raises SecretError.
     With ``connector``, the reference must belong to it (see the module docstring)."""
     if not isinstance(ref, dict) or len(ref) != 1:
-        raise SecretError('a secret is given as a reference: {"env": "FSR_SECRET_<CONNECTOR>_<FIELD>"} '
+        raise SecretError('a secret is given as a reference: {"env": "FSR_SECRET_<CONNECTOR>__<FIELD>"} '
                           'or {"file": "<name inside $FSR_SECRETS_DIR>"}, never as a value')
     (kind, target), = ref.items()
     if kind == "env":
         if not isinstance(target, str) or not _ENV_NAME.fullmatch(target):
             raise SecretError("an env reference must name a variable starting with FSR_SECRET_ "
                               "(upper-case letters, digits, underscores)")
-        if connector and not target.startswith(f"FSR_SECRET_{_slug(connector).upper()}_"):
+        if connector and not target.startswith(f"FSR_SECRET_{_slug(connector).upper()}__"):
             raise SecretError(f"{target} is not bound to {connector!r}: name it "
-                              f"FSR_SECRET_{_slug(connector).upper()}_<FIELD> so the key can only "
-                              "be used for that connector")
+                              f"FSR_SECRET_{_slug(connector).upper()}__<FIELD> (two underscores "
+                              "after the connector) so the key can only be used for that connector")
         value = os.environ.get(target, "")
         if not value:
             raise SecretError(f"{target} is not set in the environment of the server process; "
@@ -114,8 +133,11 @@ def _resolve_secret(ref: Any, connector: str = "") -> tuple[str, str]:
         path = (base / str(target)).resolve()
         if base != path and base not in path.parents:
             raise SecretError("a file reference must stay inside $FSR_SECRETS_DIR")
-        rel = path.relative_to(base).as_posix().lower()
-        if connector and not rel.startswith(_slug(connector).lower()):
+        parts = path.relative_to(base).parts
+        slug = _slug(connector).lower()
+        own = bool(parts) and (parts[0].lower() == slug if len(parts) > 1
+                               else parts[0].lower().split(".", 1)[0] == slug)
+        if connector and not own:
             raise SecretError(f"{str(target)!r} is not bound to {connector!r}: put it in a folder "
                               f"or file named for the connector (e.g. {connector}/<field>)")
         if not path.is_file():
@@ -210,10 +232,10 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
     leaked = [k for k in fields if _is_secret_field(k, schema)]
     for k in leaked:
         run.unknown(f"{k!r} is a secret field: do not pass its value. Set it in an environment "
-                    f"variable where the MCP server runs (name it FSR_SECRET_<CONNECTOR>_<FIELD>) and call again "
-                    f"with secrets={{{k!r}: {{'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'}}}}")
+                    f"variable where the MCP server runs (name it FSR_SECRET_<CONNECTOR>__<FIELD>) and call again "
+                    f"with secrets={{{k!r}: {{'env': 'FSR_SECRET_<CONNECTOR>__<FIELD>'}}}}")
     if leaked:
-        run.next("setup_connector(..., secrets={<field>: {'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'}})",
+        run.next("setup_connector(..., secrets={<field>: {'env': 'FSR_SECRET_<CONNECTOR>__<FIELD>'}})",
                  "give the reference, not the value", 2)
         return run.result("blocked")
 
@@ -229,8 +251,9 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
     allowed = _allowed_hosts()
     if secrets and allowed:
         for k, h in dest.items():
-            if not any(h == a or h.endswith("." + a) for a in allowed):
-                problems.append(f"{k!r} points at {h!r}, which is not in FSR_SECRET_ALLOWED_HOSTS; "
+            if not h or not any(h == a or h.endswith("." + a) for a in allowed):
+                problems.append(f"{k!r} points at {h or 'a value that cannot be read as a host'!r}, "
+                                "which is not in FSR_SECRET_ALLOWED_HOSTS; "
                                 "secrets are only sent to hosts the operator listed")
     sources: dict[str, str] = {}
     resolved: dict[str, str] = {}
@@ -255,7 +278,7 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
     missing = [n for n, f in schema.items()
                if f.get("required") and n not in given and f.get("value") in (None, "")]
     for n in missing:
-        how = "secrets={'" + n + "': {'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'}}" if _is_secret_field(n, schema) \
+        how = "secrets={'" + n + "': {'env': 'FSR_SECRET_<CONNECTOR>__<FIELD>'}}" if _is_secret_field(n, schema) \
             else f"fields={{'{n}': <value>}}"
         problems.append(f"required field {n!r} ({schema[n].get('title') or n}) is missing - pass {how}")
     if problems:
@@ -267,11 +290,11 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
     existing = {c.name for c in api.configurations(connector)}
     action = "update" if config_name in existing else "create"
     run.data.update({"connector": connector, "config_name": config_name, "action": action,
-                     "destination_hosts": sorted(set(dest.values())), "fields": fields, "secrets": {k: f"from {w}" for k, w in sources.items()}})
+                     "destination_hosts": sorted({h for h in dest.values() if h}), "fields": fields, "secrets": {k: f"from {w}" for k, w in sources.items()}})
     if check_only:
         run.finding(f"ready to {action} configuration {config_name!r} on {connector!r}; "
                     f"{len(sources)} secret(s) resolved ({', '.join(sources.values()) or 'none needed'})"
-                    + (f"; it will talk to {', '.join(sorted(set(dest.values())))}" if dest and sources else ""),
+                    + (f"; it will talk to {', '.join(sorted({h for h in dest.values() if h}))}" if dest and sources else ""),
                     [sev], "high")
         run.next("setup_connector(..., check_only=false)", "write it and healthcheck", 2)
         return run.result()

@@ -18,7 +18,7 @@ for a low-level tool only when no workflow fits.
 | Author a playbook | `build_playbook` → `publish_playbook` → `verify_write` |
 | Run a playbook from its YAML (gate, publish, trigger, wait, read the steps) | `run_playbook_yaml` - one call, do not chain the primitives |
 | Build or fix a connector | `build_connector` (scaffold + validate; edit, re-run), then pyfsr `deploy_connector` |
-| Configure a connector (credentials!) | `setup_connector` - give a **reference** to each secret, never its value; the operator sets `FSR_SECRET_<CONNECTOR>_<FIELD>` where the server runs (a key works only for its own connector; `FSR_SECRET_ALLOWED_HOSTS` pins where it may be sent); installing needs `confirm_install=true` |
+| Configure a connector (credentials!) | `setup_connector` - give a **reference** to each secret, never its value; the operator sets `FSR_SECRET_<CONNECTOR>__<FIELD>` where the server runs (a key works only for its own connector; `FSR_SECRET_ALLOWED_HOSTS` pins where it may be sent); installing needs `confirm_install=true` |
 | Confirm a write actually landed | `verify_write` |
 | Gather an alert's evidence | `investigate_alert` |
 

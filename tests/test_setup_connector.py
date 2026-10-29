@@ -29,7 +29,7 @@ SCHEMA = [
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     set_result_store(MemoryResultStore())
-    monkeypatch.setenv("FSR_SECRET_VIRUSTOTAL_API_KEY", SECRET)
+    monkeypatch.setenv("FSR_SECRET_VIRUSTOTAL__API_KEY", SECRET)
 
 
 class FakeConnectors:
@@ -65,7 +65,7 @@ class FakeConnectors:
 def _go(monkeypatch, fake, **kw):
     monkeypatch.setattr(CS._shared, "_live_client", lambda: SimpleNamespace(connectors=fake))
     kw.setdefault("fields", {"server": "www.virustotal.com"})
-    kw.setdefault("secrets", {"api_key": {"env": "FSR_SECRET_VIRUSTOTAL_API_KEY"}})
+    kw.setdefault("secrets", {"api_key": {"env": "FSR_SECRET_VIRUSTOTAL__API_KEY"}})
     return CS.setup_connector("virustotal", **kw)
 
 
@@ -79,7 +79,7 @@ def test_happy_path_saves_the_real_value_but_never_reports_it(monkeypatch):
     assert r.status == "answered"
     assert fake.saved == [("virustotal", {"server": "www.virustotal.com", "api_key": SECRET}, "Lab", False)]
     assert SECRET not in _everything(r)
-    assert r.data["secrets"] == {"api_key": "from env FSR_SECRET_VIRUSTOTAL_API_KEY"}
+    assert r.data["secrets"] == {"api_key": "from env FSR_SECRET_VIRUSTOTAL__API_KEY"}
     assert any("reachable" in f.claim for f in r.findings)
 
 
@@ -111,7 +111,7 @@ def test_only_fsr_secret_variables_resolve(monkeypatch):
 
 
 def test_an_unset_variable_says_where_to_set_it(monkeypatch):
-    monkeypatch.delenv("FSR_SECRET_VIRUSTOTAL_API_KEY")
+    monkeypatch.delenv("FSR_SECRET_VIRUSTOTAL__API_KEY")
     r = _go(monkeypatch, FakeConnectors())
     assert r.status == "blocked"
     assert any("not set in the environment" in f.claim and "restart" in f.claim for f in r.findings)
@@ -200,9 +200,9 @@ def test_an_unreadable_schema_is_a_read_failure_not_unknown_fields(monkeypatch):
 
 
 def test_a_secret_is_bound_to_its_own_connector(monkeypatch):
-    monkeypatch.setenv("FSR_SECRET_JIRA_TOKEN", "jira-LEAK")
+    monkeypatch.setenv("FSR_SECRET_JIRA__TOKEN", "jira-LEAK")
     fake = FakeConnectors()
-    r = _go(monkeypatch, fake, secrets={"api_key": {"env": "FSR_SECRET_JIRA_TOKEN"}})
+    r = _go(monkeypatch, fake, secrets={"api_key": {"env": "FSR_SECRET_JIRA__TOKEN"}})
     assert r.status == "blocked" and not fake.saved
     assert any("not bound to 'virustotal'" in f.claim for f in r.findings)
     assert "jira-LEAK" not in _everything(r)
@@ -229,3 +229,35 @@ def test_the_destination_host_is_reported(monkeypatch):
     r = _go(monkeypatch, FakeConnectors(), check_only=True)
     assert r.data["destination_hosts"] == ["www.virustotal.com"]
     assert any("www.virustotal.com" in f.claim for f in r.findings)
+
+
+@pytest.mark.parametrize("server", [
+    "https://www.virustotal.com@evil.example.net/",   # userinfo trick
+    "https://evil.example.net\\\\@www.virustotal.com",  # backslash parser differential
+    "https://evil.example.net#.virustotal.com",        # fragment
+    "https://www.virustotal.com .evil.example.net",    # whitespace
+    "https://evil-virustotal.com",                     # suffix without a dot boundary
+])
+def test_allowed_hosts_are_not_fooled_by_url_tricks(monkeypatch, server):
+    monkeypatch.setenv("FSR_SECRET_ALLOWED_HOSTS", "virustotal.com")
+    fake = FakeConnectors()
+    r = _go(monkeypatch, fake, fields={"server": server})
+    assert r.status == "blocked" and not fake.saved
+
+
+def test_allowed_hosts_cover_a_destination_in_any_field(monkeypatch):
+    monkeypatch.setenv("FSR_SECRET_ALLOWED_HOSTS", "virustotal.com")
+    fake = FakeConnectors()
+    r = _go(monkeypatch, fake, fields={"server": "www.virustotal.com", "proxy": "https://evil.example.net:8443"})
+    assert r.status == "blocked" and not fake.saved
+
+
+def test_one_connector_name_cannot_be_a_prefix_of_another(monkeypatch, tmp_path):
+    monkeypatch.setenv("FSR_SECRET_VIRUSTOTAL_PRO__API_KEY", "pro-LEAK")
+    r = _go(monkeypatch, FakeConnectors(), secrets={"api_key": {"env": "FSR_SECRET_VIRUSTOTAL_PRO__API_KEY"}})
+    assert r.status == "blocked" and "pro-LEAK" not in _everything(r)
+    (tmp_path / "virustotal-pro").mkdir()
+    (tmp_path / "virustotal-pro" / "key").write_text("pro-LEAK")
+    monkeypatch.setenv("FSR_SECRETS_DIR", str(tmp_path))
+    r = _go(monkeypatch, FakeConnectors(), secrets={"api_key": {"file": "virustotal-pro/key"}})
+    assert r.status == "blocked" and "pro-LEAK" not in _everything(r)
