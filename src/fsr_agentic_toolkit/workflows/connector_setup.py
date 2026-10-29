@@ -5,11 +5,20 @@ The model supplies the connector, a configuration name, the plain (non-secret) f
 and a *reference* for each secret field. The reference is resolved here, in the server's own
 process, and the value goes straight to FortiSOAR:
 
-- ``{"env": "FSR_SECRET_<NAME>"}`` - a variable the operator set where the server runs. Only
-  names with the ``FSR_SECRET_`` prefix resolve, so the model cannot ask for an arbitrary
-  variable of the host (cloud keys, tokens) to be copied into a configuration.
-- ``{"file": "<name>"}`` - a file inside ``$FSR_SECRETS_DIR`` (trailing newline stripped). A
-  path that leaves that directory is refused; with the variable unset, file references are off.
+- ``{"env": "FSR_SECRET_<CONNECTOR>_<FIELD>"}`` - a variable the operator set where the server
+  runs. Only names with the ``FSR_SECRET_`` prefix resolve, so the model cannot ask for an
+  arbitrary variable of the host (cloud keys, tokens) to be copied into a configuration.
+- ``{"file": "<connector>/<name>"}`` - a file inside ``$FSR_SECRETS_DIR`` (trailing newline
+  stripped). A path that leaves that directory is refused; with the variable unset, file
+  references are off.
+
+A secret is bound to the connector it was set up for: the variable name must carry the
+connector (``FSR_SECRET_VIRUSTOTAL_API_KEY`` for ``virustotal``), and a file must sit under a
+folder or name starting with the connector. A reference for another connector is refused, so a
+model cannot point one service's key at a different connector. The operator can also pin where
+secrets may be sent with ``FSR_SECRET_ALLOWED_HOSTS`` (comma-separated host names, suffix
+match): any server/url/host field must then name an allowed host. The destination host is
+always reported, and shown in the approval prompt through the field values.
 
 The other direction is closed too: a literal value for a secret field is refused without
 echoing it, and every string in the result (findings, evidence, errors, the healthcheck
@@ -52,16 +61,45 @@ class _Redactor:
         return out
 
 
-def _resolve_secret(ref: Any) -> tuple[str, str]:
-    """``(value, where_it_came_from)`` for a secret reference. Raises SecretError."""
+def _slug(connector: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "_", connector).strip("_")
+
+
+_HOST_FIELD = re.compile(r"(server|url|host|address|endpoint|domain|base)", re.IGNORECASE)
+
+
+def _host_of(value: Any) -> str:
+    text = str(value).strip()
+    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text, flags=re.IGNORECASE)
+    return re.split(r"[/:?#]", text.rsplit("@", 1)[-1], maxsplit=1)[0].lower()
+
+
+def _allowed_hosts() -> list[str]:
+    return [h.strip().lower() for h in os.environ.get("FSR_SECRET_ALLOWED_HOSTS", "").split(",") if h.strip()]
+
+
+def _destinations(fields: dict, schema: dict[str, dict]) -> dict[str, str]:
+    """Field name -> host for every field that says where the connector will talk to."""
+    return {k: h for k, v in fields.items()
+            if isinstance(v, str) and (_HOST_FIELD.search(k) or (schema.get(k) or {}).get("type") == "url")
+            for h in [_host_of(v)] if h}
+
+
+def _resolve_secret(ref: Any, connector: str = "") -> tuple[str, str]:
+    """``(value, where_it_came_from)`` for a secret reference. Raises SecretError.
+    With ``connector``, the reference must belong to it (see the module docstring)."""
     if not isinstance(ref, dict) or len(ref) != 1:
-        raise SecretError('a secret is given as a reference: {"env": "FSR_SECRET_<NAME>"} '
+        raise SecretError('a secret is given as a reference: {"env": "FSR_SECRET_<CONNECTOR>_<FIELD>"} '
                           'or {"file": "<name inside $FSR_SECRETS_DIR>"}, never as a value')
     (kind, target), = ref.items()
     if kind == "env":
         if not isinstance(target, str) or not _ENV_NAME.fullmatch(target):
             raise SecretError("an env reference must name a variable starting with FSR_SECRET_ "
                               "(upper-case letters, digits, underscores)")
+        if connector and not target.startswith(f"FSR_SECRET_{_slug(connector).upper()}_"):
+            raise SecretError(f"{target} is not bound to {connector!r}: name it "
+                              f"FSR_SECRET_{_slug(connector).upper()}_<FIELD> so the key can only "
+                              "be used for that connector")
         value = os.environ.get(target, "")
         if not value:
             raise SecretError(f"{target} is not set in the environment of the server process; "
@@ -76,6 +114,10 @@ def _resolve_secret(ref: Any) -> tuple[str, str]:
         path = (base / str(target)).resolve()
         if base != path and base not in path.parents:
             raise SecretError("a file reference must stay inside $FSR_SECRETS_DIR")
+        rel = path.relative_to(base).as_posix().lower()
+        if connector and not rel.startswith(_slug(connector).lower()):
+            raise SecretError(f"{str(target)!r} is not bound to {connector!r}: put it in a folder "
+                              f"or file named for the connector (e.g. {connector}/<field>)")
         if not path.is_file():
             raise SecretError(f"no secret file {str(target)!r} inside $FSR_SECRETS_DIR")
         value = path.read_text(encoding="utf-8").rstrip("\r\n")
@@ -94,7 +136,7 @@ def setup_connector(connector: str, *, config_name: str = "Default",
                     fields: dict | None = None, secrets: dict | None = None,
                     version: str = "", make_default: bool = False,
                     install: bool = False, check_only: bool = False,
-                    healthcheck: bool = True) -> WorkflowResult:
+                    healthcheck: bool = True, confirm_install: bool = False) -> WorkflowResult:
     run = WorkflowRun("setup_connector")
     redact = _Redactor()
     fields, secrets = dict(fields or {}), dict(secrets or {})
@@ -104,7 +146,7 @@ def setup_connector(connector: str, *, config_name: str = "Default",
         return run.result("blocked")
     try:
         return _setup(run, redact, client, connector, config_name, fields, secrets,
-                      version, make_default, install, check_only, healthcheck)
+                      version, make_default, install, check_only, healthcheck, confirm_install)
     except Exception as exc:  # noqa: BLE001 - never raise; never leak a value in the text
         run.unknown(redact(f"{type(exc).__name__}: {exc}"))
         return run.result("blocked")
@@ -112,7 +154,7 @@ def setup_connector(connector: str, *, config_name: str = "Default",
 
 def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, config_name: str,
            fields: dict, secrets: dict, version: str, make_default: bool, install: bool,
-           check_only: bool, healthcheck: bool) -> WorkflowResult:
+           check_only: bool, healthcheck: bool, confirm_install: bool = False) -> WorkflowResult:
     api = client.connectors
 
     # 1. installed?
@@ -128,6 +170,13 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
         if check_only:
             run.unknown(f"{connector!r} is not installed; check_only did not install it")
             return run.result("partial")
+        if not confirm_install:
+            # installing puts executable code on the appliance: confirm-gated like install_connector
+            run.unknown(f"installing {connector!r} runs third-party code on the box, so it needs "
+                        "confirm_install=true. Tell the user what will be installed, then call again.")
+            run.next(f"setup_connector(connector='{connector}', install=true, confirm_install=true, ...)",
+                     "install it after the user agrees", 2)
+            return run.result("blocked")
         try:
             api.install(connector, version=version or None, wait=True)
         except Exception as exc:  # noqa: BLE001
@@ -161,10 +210,10 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
     leaked = [k for k in fields if _is_secret_field(k, schema)]
     for k in leaked:
         run.unknown(f"{k!r} is a secret field: do not pass its value. Set it in an environment "
-                    f"variable where the MCP server runs (name it FSR_SECRET_<NAME>) and call again "
-                    f"with secrets={{{k!r}: {{'env': 'FSR_SECRET_<NAME>'}}}}")
+                    f"variable where the MCP server runs (name it FSR_SECRET_<CONNECTOR>_<FIELD>) and call again "
+                    f"with secrets={{{k!r}: {{'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'}}}}")
     if leaked:
-        run.next("setup_connector(..., secrets={<field>: {'env': 'FSR_SECRET_<NAME>'}})",
+        run.next("setup_connector(..., secrets={<field>: {'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'}})",
                  "give the reference, not the value", 2)
         return run.result("blocked")
 
@@ -176,13 +225,20 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
             problems.append(f"{connector!r} has no field {k!r}"
                             + (f" - did you mean {near[0]!r}?" if near else
                                f" (fields: {', '.join(schema)})"))
+    dest = _destinations(fields, schema)
+    allowed = _allowed_hosts()
+    if secrets and allowed:
+        for k, h in dest.items():
+            if not any(h == a or h.endswith("." + a) for a in allowed):
+                problems.append(f"{k!r} points at {h!r}, which is not in FSR_SECRET_ALLOWED_HOSTS; "
+                                "secrets are only sent to hosts the operator listed")
     sources: dict[str, str] = {}
     resolved: dict[str, str] = {}
     for k, ref in secrets.items():
         if k not in schema:
             continue
         try:
-            value, where = _resolve_secret(ref)
+            value, where = _resolve_secret(ref, connector)
         except SecretError as exc:
             problems.append(f"secret {k!r}: {exc}")
             continue
@@ -199,7 +255,7 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
     missing = [n for n, f in schema.items()
                if f.get("required") and n not in given and f.get("value") in (None, "")]
     for n in missing:
-        how = "secrets={'" + n + "': {'env': 'FSR_SECRET_<NAME>'}}" if _is_secret_field(n, schema) \
+        how = "secrets={'" + n + "': {'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'}}" if _is_secret_field(n, schema) \
             else f"fields={{'{n}': <value>}}"
         problems.append(f"required field {n!r} ({schema[n].get('title') or n}) is missing - pass {how}")
     if problems:
@@ -211,10 +267,11 @@ def _setup(run: WorkflowRun, redact: _Redactor, client: Any, connector: str, con
     existing = {c.name for c in api.configurations(connector)}
     action = "update" if config_name in existing else "create"
     run.data.update({"connector": connector, "config_name": config_name, "action": action,
-                     "fields": fields, "secrets": {k: f"from {w}" for k, w in sources.items()}})
+                     "destination_hosts": sorted(set(dest.values())), "fields": fields, "secrets": {k: f"from {w}" for k, w in sources.items()}})
     if check_only:
         run.finding(f"ready to {action} configuration {config_name!r} on {connector!r}; "
-                    f"{len(sources)} secret(s) resolved ({', '.join(sources.values()) or 'none needed'})",
+                    f"{len(sources)} secret(s) resolved ({', '.join(sources.values()) or 'none needed'})"
+                    + (f"; it will talk to {', '.join(sorted(set(dest.values())))}" if dest and sources else ""),
                     [sev], "high")
         run.next("setup_connector(..., check_only=false)", "write it and healthcheck", 2)
         return run.result()

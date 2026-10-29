@@ -29,7 +29,7 @@ SCHEMA = [
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     set_result_store(MemoryResultStore())
-    monkeypatch.setenv("FSR_SECRET_VT_KEY", SECRET)
+    monkeypatch.setenv("FSR_SECRET_VIRUSTOTAL_API_KEY", SECRET)
 
 
 class FakeConnectors:
@@ -65,7 +65,7 @@ class FakeConnectors:
 def _go(monkeypatch, fake, **kw):
     monkeypatch.setattr(CS._shared, "_live_client", lambda: SimpleNamespace(connectors=fake))
     kw.setdefault("fields", {"server": "www.virustotal.com"})
-    kw.setdefault("secrets", {"api_key": {"env": "FSR_SECRET_VT_KEY"}})
+    kw.setdefault("secrets", {"api_key": {"env": "FSR_SECRET_VIRUSTOTAL_API_KEY"}})
     return CS.setup_connector("virustotal", **kw)
 
 
@@ -79,7 +79,7 @@ def test_happy_path_saves_the_real_value_but_never_reports_it(monkeypatch):
     assert r.status == "answered"
     assert fake.saved == [("virustotal", {"server": "www.virustotal.com", "api_key": SECRET}, "Lab", False)]
     assert SECRET not in _everything(r)
-    assert r.data["secrets"] == {"api_key": "from env FSR_SECRET_VT_KEY"}
+    assert r.data["secrets"] == {"api_key": "from env FSR_SECRET_VIRUSTOTAL_API_KEY"}
     assert any("reachable" in f.claim for f in r.findings)
 
 
@@ -111,19 +111,20 @@ def test_only_fsr_secret_variables_resolve(monkeypatch):
 
 
 def test_an_unset_variable_says_where_to_set_it(monkeypatch):
-    monkeypatch.delenv("FSR_SECRET_VT_KEY")
+    monkeypatch.delenv("FSR_SECRET_VIRUSTOTAL_API_KEY")
     r = _go(monkeypatch, FakeConnectors())
     assert r.status == "blocked"
     assert any("not set in the environment" in f.claim and "restart" in f.claim for f in r.findings)
 
 
 def test_file_references_stay_inside_the_secrets_directory(monkeypatch, tmp_path):
-    (tmp_path / "vt").write_text(SECRET + "\n")
+    (tmp_path / "virustotal").mkdir()
+    (tmp_path / "virustotal" / "key").write_text(SECRET + "\n")
     outside = tmp_path.parent / "outside-secret"
     outside.write_text("outside-LEAK")
     monkeypatch.setenv("FSR_SECRETS_DIR", str(tmp_path))
     fake = FakeConnectors()
-    ok = _go(monkeypatch, fake, secrets={"api_key": {"file": "vt"}})
+    ok = _go(monkeypatch, fake, secrets={"api_key": {"file": "virustotal/key"}})
     assert ok.status == "answered" and fake.saved[0][1]["api_key"] == SECRET  # newline stripped
     bad = _go(monkeypatch, FakeConnectors(), secrets={"api_key": {"file": "../outside-secret"}})
     assert bad.status == "blocked" and "outside-LEAK" not in _everything(bad)
@@ -131,7 +132,7 @@ def test_file_references_stay_inside_the_secrets_directory(monkeypatch, tmp_path
 
 def test_file_references_are_off_without_the_directory(monkeypatch):
     monkeypatch.delenv("FSR_SECRETS_DIR", raising=False)
-    r = _go(monkeypatch, FakeConnectors(), secrets={"api_key": {"file": "vt"}})
+    r = _go(monkeypatch, FakeConnectors(), secrets={"api_key": {"file": "virustotal/key"}})
     assert r.status == "blocked" and any("FSR_SECRETS_DIR" in f.claim for f in r.findings)
 
 
@@ -171,7 +172,10 @@ def test_not_installed_asks_before_installing(monkeypatch):
     r = _go(monkeypatch, fake)
     assert r.status == "blocked" and not fake.installs
     assert any("install=true" in n.action for n in r.next)
-    r2 = _go(monkeypatch, fake, install=True)
+    r1 = _go(monkeypatch, fake, install=True)  # no confirm: code would run on the box unasked
+    assert r1.status == "blocked" and not fake.installs
+    assert any("confirm_install=true" in n.action for n in r1.next)
+    r2 = _go(monkeypatch, fake, install=True, confirm_install=True)
     assert fake.installs == ["virustotal"] and r2.status == "answered"
 
 
@@ -193,3 +197,35 @@ def test_an_unreadable_schema_is_a_read_failure_not_unknown_fields(monkeypatch):
     assert r.status == "blocked" and not fake.saved
     assert any("could not read" in u and "nothing was written" in u for u in r.unknowns)
     assert not any("has no field" in f.claim for f in r.findings)
+
+
+def test_a_secret_is_bound_to_its_own_connector(monkeypatch):
+    monkeypatch.setenv("FSR_SECRET_JIRA_TOKEN", "jira-LEAK")
+    fake = FakeConnectors()
+    r = _go(monkeypatch, fake, secrets={"api_key": {"env": "FSR_SECRET_JIRA_TOKEN"}})
+    assert r.status == "blocked" and not fake.saved
+    assert any("not bound to 'virustotal'" in f.claim for f in r.findings)
+    assert "jira-LEAK" not in _everything(r)
+
+
+def test_a_file_secret_must_sit_under_its_connector(monkeypatch, tmp_path):
+    (tmp_path / "other").write_text("other-LEAK")
+    monkeypatch.setenv("FSR_SECRETS_DIR", str(tmp_path))
+    r = _go(monkeypatch, FakeConnectors(), secrets={"api_key": {"file": "other"}})
+    assert r.status == "blocked" and "other-LEAK" not in _everything(r)
+
+
+def test_allowed_hosts_stop_a_secret_going_to_another_server(monkeypatch):
+    monkeypatch.setenv("FSR_SECRET_ALLOWED_HOSTS", "virustotal.com")
+    fake = FakeConnectors()
+    bad = _go(monkeypatch, fake, fields={"server": "https://evil.example.net/v3"})
+    assert bad.status == "blocked" and not fake.saved
+    assert any("FSR_SECRET_ALLOWED_HOSTS" in f.claim for f in bad.findings)
+    ok = _go(monkeypatch, fake, fields={"server": "https://www.virustotal.com/api"})
+    assert ok.status == "answered"
+
+
+def test_the_destination_host_is_reported(monkeypatch):
+    r = _go(monkeypatch, FakeConnectors(), check_only=True)
+    assert r.data["destination_hosts"] == ["www.virustotal.com"]
+    assert any("www.virustotal.com" in f.claim for f in r.findings)

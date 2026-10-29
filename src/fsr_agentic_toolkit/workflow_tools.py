@@ -266,23 +266,25 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "Configure a connector in ONE call: (install it), save a named configuration, and "
         "healthcheck it. SECRETS NEVER GO THROUGH YOU: put plain values (server URL, port, "
         "verify_ssl) in `fields`, and for each password/API-key field give a REFERENCE in "
-        "`secrets`, e.g. secrets={'api_key': {'env': 'FSR_SECRET_VT_KEY'}}. The operator sets "
+        "`secrets`, e.g. secrets={'api_key': {'env': 'FSR_SECRET_VIRUSTOTAL_API_KEY'}}. The operator sets "
         "that variable where the MCP server runs; this tool reads it and sends it straight to "
         "FortiSOAR. A literal value for a secret field is refused. Only variables named "
-        "FSR_SECRET_* resolve; {'file': '<name>'} reads a file inside $FSR_SECRETS_DIR. The "
+        "FSR_SECRET_<CONNECTOR>_* resolve, and only for that connector; {'file': '<connector>/<name>'} "
+        "reads a file inside $FSR_SECRETS_DIR. The "
         "result names where each secret came from and never contains it. check_only=true "
         "validates the fields and resolves the references without writing. install=true "
-        "installs from Content Hub when the connector is missing. A configuration with the "
+        "installs from Content Hub when the connector is missing and needs confirm_install=true. A configuration with the "
         "same config_name is overwritten, and the result says so.",
         _obj({"connector": {**_STR, "description": "Connector machine name, e.g. virustotal."},
               "config_name": {**_STR, "description": "Name of this configuration (default 'Default')."},
               "fields": {"type": "object", "description": "Plain, NON-secret values by field name."},
               "secrets": {"type": "object",
                           "description": "Secret fields by name, each a reference: "
-                                         "{'env': 'FSR_SECRET_<NAME>'} or {'file': '<name>'}. Never a value."},
+                                         "{'env': 'FSR_SECRET_<CONNECTOR>_<FIELD>'} or {'file': '<name>'}. Never a value."},
               "version": _STR,
               "make_default": {"type": "boolean"},
-              "install": {"type": "boolean", "description": "Install from Content Hub if missing."},
+              "install": {"type": "boolean", "description": "Install from Content Hub if missing (also needs confirm_install=true)."},
+              "confirm_install": {"type": "boolean", "description": "Required with install=true: installing runs third-party code on the box."},
               "check_only": {"type": "boolean", "description": "Validate and resolve; write nothing."},
               "healthcheck": {"type": "boolean", "description": "Check reachability after saving (default true)."}},
              ["connector"]),
