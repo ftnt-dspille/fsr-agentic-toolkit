@@ -210,8 +210,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(
         "\nsafety: add FSR_MCP_READONLY=1 to the env block for a read-only surface, "
         "or FSR_MCP_ALLOW_TOOLS/FSR_MCP_DENY_TOOLS to narrow it. Destructive tools "
-        "always need confirm=true. Writes ask the user to approve first when the client "
-        "supports it (FSR_MCP_APPROVAL=auto|require|off). For Claude Code, "
+        "always need confirm=true. By default every write asks the user to approve first and "
+        "is refused when the client cannot be asked (FSR_MCP_APPROVAL=require, the default; "
+        "auto falls back to the client's own prompts, off never asks). For Claude Code, "
         "`fsr-agentic-toolkit permissions` prints matching allow/ask rules."
     )
     from .verbs.mcp import OPERATING_GUIDE

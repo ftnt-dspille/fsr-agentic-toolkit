@@ -11,9 +11,11 @@ work everywhere:
 
 ``FSR_MCP_APPROVAL``:
 
-- ``auto`` (default) - ask when the client supports elicitation; otherwise run the write and
-  leave it to the client's own tool prompts.
-- ``require`` - ask, and refuse the write when the client cannot be asked.
+- ``require`` (default) - ask on every write, and refuse the write when the client cannot be
+  asked. A write to the box reaches the appliance only after a human approves it (or the
+  client is configured to auto-accept the prompt, which is the user's own choice).
+- ``auto`` - ask when the client supports elicitation; otherwise run the write and leave it
+  to the client's own tool prompts (an opt-in to the older, looser behaviour).
 - ``off`` - never ask (CI, or a client with its own approval flow already configured).
 
 Reads never prompt. A call the safety policy would refuse anyway (read-only mode, a deny list,
@@ -47,8 +49,8 @@ def approval_timeout(env: dict[str, str] | None = None) -> float:
 
 
 def approval_mode(env: dict[str, str] | None = None) -> str:
-    value = ((env if env is not None else os.environ).get("FSR_MCP_APPROVAL") or "auto").strip().lower()
-    return value if value in ("auto", "require", "off") else "auto"
+    value = ((env if env is not None else os.environ).get("FSR_MCP_APPROVAL") or "require").strip().lower()
+    return value if value in ("auto", "require", "off") else "require"
 
 
 def mask_secrets(value: Any) -> Any:
