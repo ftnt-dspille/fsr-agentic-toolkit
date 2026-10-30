@@ -83,8 +83,18 @@ def test_a_call_the_policy_would_refuse_is_refused_without_asking(monkeypatch):
 
 
 def test_a_client_that_cannot_be_asked_runs_in_auto_and_is_refused_in_require():
-    assert _ask(Session(can_ask=False), "create_record") is None
+    assert _ask(Session(can_ask=False), "create_record", mode="auto") is None
     out = _ask(Session(can_ask=False), "create_record", mode="require")
+    assert out["error"]["type"] == "ApprovalUnavailable"
+
+
+def test_the_default_posture_refuses_a_write_a_client_cannot_be_asked_to_approve(monkeypatch):
+    """With FSR_MCP_APPROVAL unset the mode is require, so a write to a client that cannot be
+    elicited is refused rather than silently run -- a write reaches the box only after a human
+    approves it (or the client is set to auto-accept the prompt)."""
+    monkeypatch.delenv("FSR_MCP_APPROVAL", raising=False)
+    out = asyncio.run(A.require_approval(Session(can_ask=False), "create_record",
+                                         {"module": "alerts"}, "159 (https://box)"))
     assert out["error"]["type"] == "ApprovalUnavailable"
 
 
@@ -93,10 +103,11 @@ def test_off_never_asks():
     assert _ask(s, "create_record", mode="off") is None and not s.asked
 
 
-def test_mode_comes_from_the_environment_and_defaults_to_auto():
-    assert A.approval_mode({}) == "auto"
+def test_mode_comes_from_the_environment_and_defaults_to_require():
+    assert A.approval_mode({}) == "require"
+    assert A.approval_mode({"FSR_MCP_APPROVAL": "AUTO"}) == "auto"
     assert A.approval_mode({"FSR_MCP_APPROVAL": "REQUIRE"}) == "require"
-    assert A.approval_mode({"FSR_MCP_APPROVAL": "nonsense"}) == "auto"
+    assert A.approval_mode({"FSR_MCP_APPROVAL": "nonsense"}) == "require"
 
 
 def test_destructive_prompts_say_so():
