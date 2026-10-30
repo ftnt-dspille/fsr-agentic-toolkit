@@ -11,6 +11,7 @@ playbook that already existed on the box is never removed.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fsr_playbooks.mcp_server import _shared
@@ -112,6 +113,30 @@ def _silent_empties(client: Any, run_pk: str | None, yaml_text: str) -> list[str
     return out[:5]
 
 
+def _set_variable_values(client: Any, run_pk: str | None, yaml_text: str) -> dict[str, dict[str, Any]]:
+    """What each set_variable step in the YAML produced, read off the run's own env.
+
+    The step's ``result`` is ``{}`` for a set_variable (the values live in the run env),
+    so an agent reading only the steps sees nothing and cannot assert on its marker.
+    Returns {step name: {variable: value}}; best effort, empty on a read failure."""
+    if not run_pk:
+        return {}
+    try:
+        import yaml
+        doc = yaml.safe_load(yaml_text) or {}
+        env = dict(client.playbooks.run_env(run_pk).env or {})
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for pb in doc.get("playbooks") or []:
+        for st in pb.get("steps") or []:
+            if isinstance(st, dict) and st.get("type") == "set_variable":
+                got = {k: env[k] for k in (st.get("vars") or {}) if k in env}
+                if got:
+                    out[str(st.get("name"))] = got
+    return out
+
+
 def _cleanup(client: Any, run: WorkflowRun, report: dict[str, Any]) -> None:
     """Delete only what this call created. Anything pre-existing is left alone."""
     created = list(report.get("created") or [])
@@ -189,12 +214,21 @@ def run_playbook_yaml(yaml_text: str, *, playbook: str = "", inputs: dict | None
                        f"new={report.get('new')}; changed={report.get('changed')}; "
                        f"unchanged={report.get('unchanged')}")
     run.finding(f"published {target!r} into collection {pub.get('collection')!r}", [pev], "high")
+    if pub.get("restored"):
+        rev = run.evidence("playbook", pub.get("collection") or "collection",
+                           f"restored from the recycle bin: {', '.join(pub['restored'])}"[:300])
+        run.finding(f"{len(pub['restored'])} soft-deleted row(s) left by an earlier delete were "
+                    "restored before publishing (no action needed)", [rev], "high")
 
     status: str = "answered"
     try:
         uuid = _uuid_of(yaml_text, target)
+        # FortiSOAR records set_variable values and step results only for a debug run;
+        # without this every step reads back {} and the agent cannot assert on a marker.
+        # The notrigger route reads force_debug from the body; a caller's env wins.
         res = client.playbooks.run_and_wait(
-            None if uuid else target, playbook_uuid=uuid, inputs=inputs, env=env,
+            None if uuid else target, playbook_uuid=uuid, inputs=inputs,
+            env={"force_debug": True, **(env or {})},
             record_uuid=record_uuid or None, module=module or None,
             answers=answers, timeout=timeout)
     except TimeoutError:
@@ -230,6 +264,16 @@ def run_playbook_yaml(yaml_text: str, *, playbook: str = "", inputs: dict | None
                                       "result": s.result_preview} for s in res.steps]}
         if res.succeeded:
             run.finding(f"{target!r} ran to completion ({len(res.steps)} step(s))", [rev], "high")
+            values = _set_variable_values(client, res.pk, yaml_text)
+            if values:
+                run.data["run"]["variables"] = values
+                for st in run.data["run"]["steps"]:
+                    if st["name"] in values and st["result"] in (None, "", "{}", "[]"):
+                        st["result"] = json.dumps(values[st["name"]], default=str)
+                vev = run.evidence("run", res.pk or target,
+                                   "; ".join(f"{k}={v}" for d in values.values() for k, v in d.items())[:300])
+                run.finding("set_variable values read from the run env: "
+                            + ", ".join(k for d in values.values() for k in d), [vev], "high")
             empties = _silent_empties(client, res.pk, yaml_text)
             for e in empties:
                 run.unknown(f"finished, but {e}: the run is green and may have done nothing")

@@ -614,6 +614,40 @@ def _h_compile_playbook_yaml(client, *, yaml_text) -> Any:
     return out
 
 
+def _restore_soft_deleted(client, fsr_json) -> list[str]:
+    """Bring back every soft-deleted workflow, step and route this deploy is about to reuse.
+
+    A recycle-bin row 404s on a plain GET yet still owns its uuid. Best effort per row: one
+    that cannot be checked or restored is skipped and left for deploy to report for real.
+    Returns ``["workflows/<uuid>", ...]`` for what it restored."""
+    rows: list[tuple[str, str]] = []
+    try:
+        for coll in (fsr_json or {}).get("data") or []:
+            for wf in coll.get("workflows") or []:
+                rows.append(("workflows", wf.get("uuid")))
+                rows += [("workflow_steps", x.get("uuid")) for x in wf.get("steps") or []]
+                rows += [("workflow_routes", x.get("uuid")) for x in wf.get("routes") or []]
+    except AttributeError:
+        return []
+    restored: list[str] = []
+    for entity, uuid in rows:
+        if not uuid:
+            continue
+        try:
+            if client.get(f"/api/3/{entity}/{uuid}"):
+                continue
+        except Exception:  # noqa: BLE001 - 404: absent or in the recycle bin
+            pass
+        try:
+            row = client.get(f"/api/3/{entity}/{uuid}", params={"$showDeleted": "true"})
+            if isinstance(row, dict) and row.get("deletedAt"):
+                client.put(f"/api/3/{entity}/{uuid}", data={"deletedAt": None}, params={"$showDeleted": "true"})
+                restored.append(f"{entity}/{uuid}")
+        except Exception:  # noqa: BLE001 - genuinely absent, or not restorable
+            continue
+    return restored
+
+
 def _h_publish_playbook(client, *, yaml_text, overwrite_changed=False) -> Any:
     result = _compile_playbook_yaml(yaml_text)
     if not result.ok:
@@ -623,7 +657,19 @@ def _h_publish_playbook(client, *, yaml_text, overwrite_changed=False) -> Any:
     # that run but appear in no collection (live-verified on 8.0.0). deploy
     # also pre-flights uuid ownership and fails closed when the box has UI
     # edits the YAML lacks (retry with overwrite_changed=true to discard them).
-    report = client.workflow_collections.deploy(result.fsr_json, overwrite_changed=bool(overwrite_changed))
+    # The compiler's uuids are deterministic, so a playbook deleted earlier still owns its
+    # workflow / trigger-step / route uuids in the recycle bin, and a re-publish collides on
+    # them (a 500 on the trigger step). Restore them first; if deploy still fails and that
+    # frees something, retry once. Never an error the caller has to reason through.
+    restored = _restore_soft_deleted(client, result.fsr_json)
+    try:
+        report = client.workflow_collections.deploy(result.fsr_json, overwrite_changed=bool(overwrite_changed))
+    except Exception:
+        again = _restore_soft_deleted(client, result.fsr_json)
+        if not again:
+            raise
+        restored += again
+        report = client.workflow_collections.deploy(result.fsr_json, overwrite_changed=bool(overwrite_changed))
     compiled = _compiled_collection(result)
     rows = compiled.get("workflows") or []
     return {
@@ -632,6 +678,7 @@ def _h_publish_playbook(client, *, yaml_text, overwrite_changed=False) -> Any:
         "collection": compiled.get("name"),
         "playbooks": [w.get("name") for w in rows if isinstance(w, dict)],
         "result": to_jsonable(report),
+        "restored": restored,
         "note": "Verify with last_playbook_run / wait_for_playbook_run after triggering.",
     }
 

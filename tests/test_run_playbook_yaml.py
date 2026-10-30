@@ -243,3 +243,74 @@ def test_return_in_a_snippet_gets_the_print_fix():
         suggestion = "use a bare expression/assignment or wrap it in a function you then call"
     row = T._compile_errors(SimpleNamespace(errors=[E()]))[0]
     assert "print(<value>)" in row["suggestion"] and "bare expression" not in row["suggestion"]
+
+
+def test_run_is_forced_into_debug_so_step_values_are_recorded(monkeypatch):
+    client, _ = _wire(monkeypatch)
+    R.run_playbook_yaml(YAML)
+    assert client.playbooks.calls[0][1]["env"]["force_debug"] is True
+    client.playbooks.calls.clear()
+    R.run_playbook_yaml(YAML, env={"force_debug": False, "x": 1})
+    assert client.playbooks.calls[0][1]["env"] == {"force_debug": False, "x": 1}
+
+
+def test_set_variable_values_surface_when_the_step_result_is_empty(monkeypatch):
+    yaml_text = ("playbooks:\n  - name: pb\n    steps:\n"
+                 "      - {name: Mark, type: set_variable, vars: {marker: agent-lab-ok}}\n")
+    run = _run()
+    run.steps = [SimpleNamespace(name="Mark", status="finished", duration_ms=5, result_preview="{}")]
+    client, _ = _wire(monkeypatch, playbooks=FakePlaybooks(run))
+    client.playbooks.run_env = lambda pk: _Env({"marker": "agent-lab-ok"})
+    r = R.run_playbook_yaml(yaml_text)
+    assert r.data["run"]["variables"] == {"Mark": {"marker": "agent-lab-ok"}}
+    assert "agent-lab-ok" in r.data["run"]["steps"][0]["result"]
+
+
+class _Box:
+    """get/put over a recycle bin: plain GET 404s on a soft-deleted row."""
+    def __init__(self, deleted):
+        self.deleted, self.puts = set(deleted), []
+
+    def get(self, ep, params=None, **kw):
+        ent, _, u = ep.removeprefix("/api/3/").partition("/")
+        if (ent, u) in self.deleted:
+            if (params or {}).get("$showDeleted") == "true":
+                return {"uuid": u, "deletedAt": 1.0}
+            raise RuntimeError("404")
+        return {"uuid": u}
+
+    def put(self, ep, data=None, params=None, **kw):
+        ent, _, u = ep.removeprefix("/api/3/").partition("/")
+        assert (params or {}).get("$showDeleted") == "true" and data == {"deletedAt": None}
+        self.deleted.discard((ent, u)); self.puts.append(ep)
+
+
+def test_publish_restores_soft_deleted_workflow_step_and_route():
+    fj = {"data": [{"workflows": [{"uuid": "w", "steps": [{"uuid": "trig"}, {"uuid": "s2"}],
+                                   "routes": [{"uuid": "r"}]}]}]}
+    box = _Box({("workflows", "w"), ("workflow_steps", "trig"), ("workflow_routes", "r")})
+    got = T._restore_soft_deleted(box, fj)
+    assert sorted(got) == ["workflow_routes/r", "workflow_steps/trig", "workflows/w"]
+    assert not box.deleted and T._restore_soft_deleted(box, fj) == []  # idempotent
+
+
+def test_publish_retries_once_after_restoring_what_failed_it():
+    fj = {"data": [{"name": "c", "workflows": [{"uuid": "w", "name": "pb", "steps": [{"uuid": "t"}]}]}]}
+    box = _Box(set())
+    calls = []
+
+    def deploy(data, overwrite_changed=False):
+        calls.append(1)
+        if len(calls) == 1:
+            box.deleted.add(("workflow_steps", "t"))  # surfaces only after the first attempt
+            raise RuntimeError("500 on step t")
+        return {"new": [], "changed": ["pb"], "unchanged": []}
+
+    client = SimpleNamespace(get=box.get, put=box.put, workflow_collections=SimpleNamespace(deploy=deploy))
+    comp = SimpleNamespace(ok=True, fsr_json=fj)
+    import pytest as _p
+    with _p.MonkeyPatch.context() as mp:
+        mp.setattr(T, "_compile_playbook_yaml", lambda _y: comp)
+        mp.setattr(T, "_compiled_collection", lambda _r: {"name": "c", "workflows": [{"name": "pb"}]})
+        out = T._h_publish_playbook(client, yaml_text="x")
+    assert len(calls) == 2 and out["published"] and out["restored"] == ["workflow_steps/t"]
