@@ -381,7 +381,7 @@ wheels = [
 
 [[package]]
 name = "fsr-agentic-toolkit"
-version = "0.1.1"
+version = "0.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "fsr-playbooks" },
@@ -401,10 +401,10 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fsr-playbooks", specifier = ">=0.8.0" },
+    { name = "fsr-playbooks", specifier = ">=0.9.0" },
     { name = "mcp", specifier = ">=2.0,<3" },
     { name = "pydantic", specifier = ">=2" },
-    { name = "pyfsr", specifier = ">=0.28.0" },
+    { name = "pyfsr", specifier = ">=0.31.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.17.2" },
@@ -413,7 +413,7 @@ provides-extras = ["test", "dev"]
 
 [[package]]
 name = "fsr-playbooks"
-version = "0.8.1"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -422,7 +422,7 @@ dependencies = [
     { name = "ruamel-yaml" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/50/e2ab57cdfd9b3c7b1973f0bccb73173dcae664e6ea214c14394454bb17ef/fsr_playbooks-0.8.1-py3-none-any.whl", hash = "sha256:51fbc2d07379a3b849be33ddf841c7ad739796829c7a91979d3bd37d9e1c3c82", size = 1586188, upload-time = "2026-10-23T17:55:08.99Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/d0/c72467dfc7a023a8f6740a7eaafc111e4c3fcc9fbafde53ca94d33b818a0/fsr_playbooks-0.9.0-py3-none-any.whl", hash = "sha256:169d942f5354f3eb870e383d85ae1e0dd2052e8a0d7c5d89d02cb2561081598f", size = 1614520, upload-time = "2026-10-28T16:07:32.589Z" },
 ]
 
 [[package]]
@@ -885,16 +885,16 @@ wheels = [
 
 [[package]]
 name = "pyfsr"
-version = "0.28.0"
+version = "0.31.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2a/7d/789952127c15ed428a77c4bf8df63077dda20d02adbea430bcd37fd91898/pyfsr-0.28.0.tar.gz", hash = "sha256:6b5180ac5f61ca3edcc315d9a308bc78ba959f8a2b1f74d7e6d0dd56bb011b03", size = 2035810, upload-time = "2026-10-24T15:04:17.501Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/40/1df3c083164cd8eec10a410bb3e2df24f78a60a55d87ff9f362816f745c7/pyfsr-0.31.1.tar.gz", hash = "sha256:46d8ed3766d075dbe5407c2a6e69f7076ca7cf615723eb4e6e644890793f0438", size = 2056725, upload-time = "2026-10-30T16:38:23.782Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/2a/8645586035714dad8037c3894728b97e215d29f86456702a53ee00071007/pyfsr-0.28.0-py3-none-any.whl", hash = "sha256:25d78157c90327bf1167cec7689527975a2b3ae7e315218aacbf5255db4e857c", size = 999002, upload-time = "2026-10-24T15:04:15.823Z" },
+    { url = "https://files.pythonhosted.org/packages/31/e8/35c5c5f9692f99a372f1a5c44bb32a00b600382d45ad1c7d9e1a6670cd07/pyfsr-0.31.1-py3-none-any.whl", hash = "sha256:3988be5c7a1dbeb45ad39b0065e938b58e0309592e5adfe9249e09489e0c4206", size = 1012545, upload-time = "2026-10-30T16:38:21.964Z" },
 ]
 
 [[package]]
@@ -1290,8 +1290,8 @@ name = "uvicorn"
 version = "0.54.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
+    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [

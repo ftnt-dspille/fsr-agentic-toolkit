@@ -27,7 +27,9 @@ from fsr_agentic_toolkit.workflows.connector import build_connector
 
 
 def test_scaffold_then_validate_is_answered_and_clean():
-    d = Path(tempfile.mkdtemp()) / "acme-edr"
+    # resolve: macOS temp dirs sit under the /var -> /private/var symlink, which the
+    # scaffold guard (rightly) refuses.
+    d = Path(tempfile.mkdtemp()).resolve() / "acme-edr"
     r = build_connector(str(d), scaffold={"label": "Acme EDR", "ops": [
         {"operation": "get_device", "method": "GET",
          "parameters": [{"name": "device_id", "required": True}]}]})

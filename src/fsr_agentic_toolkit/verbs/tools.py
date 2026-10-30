@@ -636,14 +636,14 @@ def _restore_soft_deleted(client, fsr_json) -> list[str]:
         try:
             if client.get(f"/api/3/{entity}/{uuid}"):
                 continue
-        except Exception:  # noqa: BLE001 - 404: absent or in the recycle bin
+        except Exception:  # noqa: BLE001, S110 - 404: absent or in the recycle bin
             pass
         try:
             row = client.get(f"/api/3/{entity}/{uuid}", params={"$showDeleted": "true"})
             if isinstance(row, dict) and row.get("deletedAt"):
                 client.put(f"/api/3/{entity}/{uuid}", data={"deletedAt": None}, params={"$showDeleted": "true"})
                 restored.append(f"{entity}/{uuid}")
-        except Exception:  # noqa: BLE001 - genuinely absent, or not restorable
+        except Exception:  # noqa: BLE001, S112 - genuinely absent, or not restorable
             continue
     return restored
 
