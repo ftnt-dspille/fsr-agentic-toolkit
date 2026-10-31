@@ -46,7 +46,7 @@ class _Client:
 # -- find_records --------------------------------------------------------------
 
 def test_find_records_lowers_predicate_with_itemvalue_and_wildcards():
-    c = _Client(members=[{"@id": "/api/3/alerts/u1", "uuid": "u1", "name": "web"}])
+    c = _Client(members=[{"@id": "/api/3/alerts/u1", "uuid": "11111111-1111-1111-1111-111111111111", "name": "web"}])
     out = tools.dispatch(c, "find_records", {"module": "alerts", "where": 'status=Open and name~"web"'})
     body = c.store["query_body"]
     assert body["logic"] == "AND"
@@ -70,7 +70,7 @@ def test_find_records_terse_sort_is_lowered():
 # -- bulk_update_records -------------------------------------------------------
 
 def test_bulk_update_where_set_builds_rows_from_matches():
-    members = [{"uuid": "u1", "name": "a"}, {"uuid": "u2", "name": "b"}]
+    members = [{"uuid": "11111111-1111-1111-1111-111111111111", "name": "a"}, {"uuid": "22222222-2222-2222-2222-222222222222", "name": "b"}]
     c = _Client(members=members)
     out = tools.dispatch(c, "bulk_update_records", {
         "module": "alerts",
@@ -81,14 +81,14 @@ def test_bulk_update_where_set_builds_rows_from_matches():
     assert {"field": "status.itemValue", "operator": "eq", "value": "Open"} in c.store["query_body"]["filters"]
     # One partial update per match: update(uuid, set-fields), the match key excluded.
     assert c.store["updates"] == [
-        ("u1", {"status": "Investigating"}),
-        ("u2", {"status": "Investigating"}),
+        ("11111111-1111-1111-1111-111111111111", {"status": "Investigating"}),
+        ("22222222-2222-2222-2222-222222222222", {"status": "Investigating"}),
     ]
     assert out == {"ok": True, "matched": 2, "updated": 2, "failed": 0}
 
 
 def test_bulk_update_set_cannot_override_the_match_key():
-    members = [{"uuid": "u1"}, {"uuid": "u2"}]
+    members = [{"uuid": "11111111-1111-1111-1111-111111111111"}, {"uuid": "22222222-2222-2222-2222-222222222222"}]
     c = _Client(members=members)
     # A set that (mistakenly) carries a uuid must NOT redirect every row to it.
     tools.dispatch(c, "bulk_update_records", {
@@ -96,7 +96,7 @@ def test_bulk_update_set_cannot_override_the_match_key():
         "set": {"uuid": "ATTACKER", "status": "Investigating"},
     })
     # Each update targets the matched uuid, and uuid is never in the update body.
-    assert [ref for ref, _ in c.store["updates"]] == ["u1", "u2"]
+    assert [ref for ref, _ in c.store["updates"]] == ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"]
     assert all("uuid" not in data and data["status"] == "Investigating" for _, data in c.store["updates"])
 
 
@@ -104,9 +104,9 @@ def test_bulk_update_explicit_records_path():
     c = _Client()
     out = tools.dispatch(c, "bulk_update_records", {
         "module": "alerts",
-        "records": [{"uuid": "u1", "severity": "High"}, {"uuid": "u2", "severity": "Low"}],
+        "records": [{"uuid": "11111111-1111-1111-1111-111111111111", "severity": "High"}, {"uuid": "22222222-2222-2222-2222-222222222222", "severity": "Low"}],
     })
-    assert c.store["updates"] == [("u1", {"severity": "High"}), ("u2", {"severity": "Low"})]
+    assert c.store["updates"] == [("11111111-1111-1111-1111-111111111111", {"severity": "High"}), ("22222222-2222-2222-2222-222222222222", {"severity": "Low"})]
     assert out["updated"] == 2
 
 
@@ -118,6 +118,17 @@ def test_bulk_update_refuses_a_row_without_the_match_key():
     })
     assert "no 'uuid'" in out["error"]["message"]
     assert "updates" not in c.store  # never reached the write
+
+
+def test_bulk_update_refuses_a_non_uuid_ref_that_could_escape_the_module():
+    c = _Client()
+    # An IRI / module:uuid ref must not be able to redirect the write off-module.
+    for bad in ("users:11111111-1111-1111-1111-111111111111", "/api/3/users/x", "not-a-uuid"):
+        out = tools.dispatch(c, "bulk_update_records", {
+            "module": "alerts", "records": [{"uuid": bad, "status": "Closed"}],
+        })
+        assert "not a bare uuid" in out["error"]["message"]
+    assert "updates" not in c.store
 
 
 def test_bulk_update_no_match_updates_nothing():
@@ -137,12 +148,12 @@ def test_bulk_update_needs_either_records_or_where_set():
 
 
 def test_bulk_update_reports_per_row_failures_without_aborting():
-    members = [{"uuid": "u1"}, {"uuid": "u2"}]
+    members = [{"uuid": "11111111-1111-1111-1111-111111111111"}, {"uuid": "22222222-2222-2222-2222-222222222222"}]
     c = _Client(members=members)
 
     class _FailRecords(_Records):
         def update(self, ref, data, *, resolve_picklists=True, strict_picklists=False):
-            if ref == "u1":
+            if ref == "11111111-1111-1111-1111-111111111111":
                 raise RuntimeError("boom")
             self.store.setdefault("updates", []).append((ref, data))
             return {"uuid": ref, **data}
@@ -153,4 +164,4 @@ def test_bulk_update_reports_per_row_failures_without_aborting():
     })
     # u1 failed, u2 still updated (the batch does not abort on one failure).
     assert out["ok"] is False and out["failed"] == 1 and out["updated"] == 1
-    assert out["failures"][0]["ref"] == "u1" and "boom" in out["failures"][0]["error"]
+    assert out["failures"][0]["ref"] == "11111111-1111-1111-1111-111111111111" and "boom" in out["failures"][0]["error"]

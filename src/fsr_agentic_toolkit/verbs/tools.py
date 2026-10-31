@@ -146,6 +146,9 @@ def _text_fields(client, module) -> list[str]:
             or str(f.get("form_type") or "").lower() in _TEXT_TYPES]
 
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
 def _picklist_fields(client, module) -> set[str]:
     """The module's picklist field names, so the terse-predicate parser can lower
     a bare ``status=Open`` to ``status.itemValue=Open``. Empty on a schema miss
@@ -253,6 +256,16 @@ def _h_bulk_update_records(
         raise ValueError(
             f"{len(missing)} row(s) have no '{match}' to match an existing record "
             f"(indexes {missing[:5]}); a bulk update never creates records"
+        )
+    # Every ref must be a bare uuid, so the update can only ever hit
+    # /api/3/<this module>/<uuid>. An IRI or a `othermodule:uuid` shorthand in a
+    # ref would otherwise redirect the write to another module/record, past the
+    # module the caller (and the approval) authorised.
+    bad = [str(r[match]) for r in rows if not _UUID_RE.match(str(r[match]))]
+    if bad:
+        raise ValueError(
+            f"{len(bad)} ref(s) are not a bare uuid ({bad[:3]}); bulk_update_records writes only "
+            "to the given module by uuid, so an IRI or module:uuid ref is refused"
         )
     if not rows:
         return {"ok": True, "matched": 0, "updated": 0, "failed": 0,
