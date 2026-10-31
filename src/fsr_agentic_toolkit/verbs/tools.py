@@ -258,17 +258,30 @@ def _h_bulk_update_records(
         return {"ok": True, "matched": 0, "updated": 0, "failed": 0,
                 "note": "no records matched; nothing to update"}
 
-    result = client.records(module).bulk_upsert(
-        rows, parse=True, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
-    )
+    # A true PARTIAL update per matched record (PUT /api/3/<module>/<uuid>), not a
+    # bulk UPSERT: the /bulkupsert route validates each row as a whole record (it
+    # rejects an update that omits a required field like `name`, live-verified on
+    # 8.0.1), so it cannot carry a fields-only change. The agent still makes ONE
+    # gated call -- the one-approval benefit is at the tool-call boundary, not the
+    # HTTP boundary -- so N records are changed behind one approval, as intended.
+    recs = client.records(module)
+    updated, failures = 0, []
+    for row in rows:
+        ref = row[match]
+        data = {k: v for k, v in row.items() if k != match}
+        try:
+            recs.update(ref, data, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists)
+            updated += 1
+        except Exception as exc:  # noqa: BLE001 - collect per-row failures, don't abort the batch
+            failures.append({"ref": ref, "error": str(exc)})
     out: dict[str, Any] = {
-        "ok": bool(result.ok),
+        "ok": not failures,
         "matched": len(rows),
-        "updated": len(result.succeeded),
-        "failed": len(result.failed),
+        "updated": updated,
+        "failed": len(failures),
     }
-    if result.failed:
-        out["failures"] = [to_jsonable(f) for f in result.failed[:10]]
+    if failures:
+        out["failures"] = failures[:10]
     return out
 
 

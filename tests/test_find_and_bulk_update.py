@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pyfsr.pagination import HydraPage
-from pyfsr.records import BulkUpsertFailure, BulkUpsertResult
 
 from fsr_agentic_toolkit.verbs import tools
 
@@ -27,11 +26,9 @@ class _Records:
         self.store["query_body"] = body
         return _page(self._members)
 
-    def bulk_upsert(self, rows, *, parse=False, resolve_picklists=True, strict_picklists=False):
-        self.store["bulk_rows"] = rows
-        self.store["bulk_resolve"] = resolve_picklists
-        succeeded = [{"uuid": r["uuid"], **r} for r in rows]
-        return BulkUpsertResult(succeeded=succeeded, failed=[], raw={})
+    def update(self, ref, data, *, resolve_picklists=True, strict_picklists=False):
+        self.store.setdefault("updates", []).append((ref, data))
+        return {"uuid": ref, **data}
 
 
 class _Client:
@@ -82,10 +79,10 @@ def test_bulk_update_where_set_builds_rows_from_matches():
     })
     # It queried with the lowered predicate (picklist -> itemValue).
     assert {"field": "status.itemValue", "operator": "eq", "value": "Open"} in c.store["query_body"]["filters"]
-    # One row per match, each carrying its uuid plus the set fields.
-    assert c.store["bulk_rows"] == [
-        {"uuid": "u1", "status": "Investigating"},
-        {"uuid": "u2", "status": "Investigating"},
+    # One partial update per match: update(uuid, set-fields), the match key excluded.
+    assert c.store["updates"] == [
+        ("u1", {"status": "Investigating"}),
+        ("u2", {"status": "Investigating"}),
     ]
     assert out == {"ok": True, "matched": 2, "updated": 2, "failed": 0}
 
@@ -98,8 +95,9 @@ def test_bulk_update_set_cannot_override_the_match_key():
         "module": "alerts", "where": "status=Open",
         "set": {"uuid": "ATTACKER", "status": "Investigating"},
     })
-    assert [r["uuid"] for r in c.store["bulk_rows"]] == ["u1", "u2"]
-    assert all(r["status"] == "Investigating" for r in c.store["bulk_rows"])
+    # Each update targets the matched uuid, and uuid is never in the update body.
+    assert [ref for ref, _ in c.store["updates"]] == ["u1", "u2"]
+    assert all("uuid" not in data and data["status"] == "Investigating" for _, data in c.store["updates"])
 
 
 def test_bulk_update_explicit_records_path():
@@ -108,7 +106,7 @@ def test_bulk_update_explicit_records_path():
         "module": "alerts",
         "records": [{"uuid": "u1", "severity": "High"}, {"uuid": "u2", "severity": "Low"}],
     })
-    assert c.store["bulk_rows"] == [{"uuid": "u1", "severity": "High"}, {"uuid": "u2", "severity": "Low"}]
+    assert c.store["updates"] == [("u1", {"severity": "High"}), ("u2", {"severity": "Low"})]
     assert out["updated"] == 2
 
 
@@ -119,7 +117,7 @@ def test_bulk_update_refuses_a_row_without_the_match_key():
         "records": [{"severity": "High"}],  # no uuid -> would create, so refused
     })
     assert "no 'uuid'" in out["error"]["message"]
-    assert "bulk_rows" not in c.store  # never reached bulk_upsert
+    assert "updates" not in c.store  # never reached the write
 
 
 def test_bulk_update_no_match_updates_nothing():
@@ -129,7 +127,7 @@ def test_bulk_update_no_match_updates_nothing():
     })
     assert out == {"ok": True, "matched": 0, "updated": 0, "failed": 0,
                    "note": "no records matched; nothing to update"}
-    assert "bulk_rows" not in c.store  # never called bulk_upsert
+    assert "updates" not in c.store  # never wrote
 
 
 def test_bulk_update_needs_either_records_or_where_set():
@@ -138,17 +136,21 @@ def test_bulk_update_needs_either_records_or_where_set():
     assert "records=[...], or both" in out["error"]["message"]
 
 
-def test_bulk_update_reports_failures():
-    members = [{"uuid": "u1"}]
+def test_bulk_update_reports_per_row_failures_without_aborting():
+    members = [{"uuid": "u1"}, {"uuid": "u2"}]
     c = _Client(members=members)
 
     class _FailRecords(_Records):
-        def bulk_upsert(self, rows, *, parse=False, resolve_picklists=True, strict_picklists=False):
-            return BulkUpsertResult(succeeded=[], failed=[BulkUpsertFailure.from_raw("row 0: boom")], raw={})
+        def update(self, ref, data, *, resolve_picklists=True, strict_picklists=False):
+            if ref == "u1":
+                raise RuntimeError("boom")
+            self.store.setdefault("updates", []).append((ref, data))
+            return {"uuid": ref, **data}
 
     c.records = lambda module: _FailRecords(c.store, members)  # type: ignore[assignment]
     out = tools.dispatch(c, "bulk_update_records", {
         "module": "alerts", "where": "status=Open", "set": {"status": "Closed"},
     })
-    assert out["ok"] is False and out["failed"] == 1 and out["updated"] == 0
-    assert out["failures"]
+    # u1 failed, u2 still updated (the batch does not abort on one failure).
+    assert out["ok"] is False and out["failed"] == 1 and out["updated"] == 1
+    assert out["failures"][0]["ref"] == "u1" and "boom" in out["failures"][0]["error"]
