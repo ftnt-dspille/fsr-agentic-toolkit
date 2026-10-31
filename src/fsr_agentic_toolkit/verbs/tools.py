@@ -306,6 +306,98 @@ def _h_delete_record(client, *, module, ref, hard=False) -> Any:
     return {"deleted": ref, "module": module, "hard": bool(hard)}
 
 
+def _h_count_records(client, *, module, where="") -> Any:
+    """Count records matching a terse predicate, without pulling any rows.
+
+    Uses the module's ``hydra:totalItems`` (a limit=1 fetch), so "how many Open
+    criticals" is a cheap decision input, not a full query that risks the output
+    cap. Empty ``where`` counts the whole module.
+    """
+    from .._predicate import parse_predicate
+
+    filters, logic = parse_predicate(where, _picklist_fields(client, module))
+    body = {"logic": logic, "filters": filters} if filters else None
+    return {"module": module, "where": where or None, "count": client.records(module).count(body)}
+
+
+def _related_refs(related, related_module) -> list[str]:
+    """Normalise related record refs to IRIs/``module:uuid`` that link accepts.
+
+    A bare uuid is ambiguous (the related module usually differs), so it is only
+    accepted when ``related_module`` is given to qualify it.
+    """
+    items = [related] if isinstance(related, str) else list(related)
+    out: list[str] = []
+    for r in items:
+        r = str(r)
+        if r.startswith("/api/") or ":" in r:
+            out.append(r)
+        elif related_module:
+            out.append(f"{related_module}:{r}")
+        else:
+            raise ValueError(
+                f"related ref {r!r} is a bare uuid: pass related_module, or give an "
+                "IRI (/api/3/<module>/<uuid>) or module:uuid"
+            )
+    return out
+
+
+def _h_link_records(client, *, module, ref, field, related, related_module=None) -> Any:
+    """Relate one or more records to ``ref`` through its relationship ``field``
+    (e.g. an alert's ``indicators`` or ``assets``). Hides the __link wire shape
+    and IRI plumbing."""
+    refs = _related_refs(related, related_module)
+    client.records(module).link(ref, field, refs)
+    return {"linked": {"module": module, "ref": ref, "field": field, "related": refs}, "count": len(refs)}
+
+
+def _h_unlink_records(client, *, module, ref, field, related, related_module=None) -> Any:
+    """Remove one or more related records from ``ref``'s relationship ``field``.
+    The inverse of link_records; the records themselves are not deleted."""
+    refs = _related_refs(related, related_module)
+    client.records(module).unlink(ref, field, refs)
+    return {"unlinked": {"module": module, "ref": ref, "field": field, "related": refs}, "count": len(refs)}
+
+
+def _h_list_related_records(client, *, module, ref, field, limit=50, fields=None, summary=True) -> Any:
+    """List the records related to ``ref`` through its relationship ``field``
+    (GET /api/3/<module>/<uuid>/<field>). Returns a compact summary each."""
+    from pyfsr.pagination import extract_members
+    from pyfsr.records import resolve_record_path
+
+    path = resolve_record_path(module, ref).rstrip("/") + f"/{field}"
+    members = extract_members(client.get(path, params={"$limit": limit}))
+    return {
+        "module": module, "ref": ref, "field": field,
+        "related": project(members, fields=fields, summary=summary),
+        "count": len(members),
+    }
+
+
+def _h_add_comment(client, *, module, ref, text) -> Any:
+    """Add a comment to a record (the analyst annotation trail). Hides the
+    comments module and its record linkage."""
+    from pyfsr.records import resolve_record_path
+
+    created = client.comments.create(text, record=resolve_record_path(module, ref))
+    cid = None
+    if isinstance(created, dict):
+        cid = created.get("uuid") or created.get("id") or created.get("@id")
+    return {"commented": {"module": module, "ref": ref}, "comment_id": cid}
+
+
+def _h_list_comments(client, *, module, ref, limit=30) -> Any:
+    """List a record's comments, newest-detail compacted to {text, by, at}."""
+    out: list[dict[str, Any]] = []
+    for c in client.records(module).comments(ref, limit=limit):
+        d = c if isinstance(c, dict) else to_jsonable(c)
+        by = d.get("createUser")
+        if isinstance(by, dict):
+            by = by.get("name") or by.get("loginid")
+        out.append({"text": d.get("comment") or d.get("content"), "by": by, "at": d.get("createDate")})
+    return {"module": module, "ref": ref, "comments": out, "count": len(out)}
+
+
 def _h_list_picklists(client) -> Any:
     return {"picklists": client.picklists.list()}
 
@@ -1414,6 +1506,129 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _h_delete_record,
         mutating=True,
         destructive=True,
+    ),
+    ToolSpec(
+        "count_records",
+        "Count records matching a terse predicate, WITHOUT pulling any rows -- a cheap "
+        "decision input (e.g. how many Open criticals). where uses the same grammar as "
+        "find_records (status=Open and severity=High); empty where counts the whole module. "
+        "Returns {module, where, count}.",
+        _obj(
+            {
+                "module": _MODULE,
+                "where": {"type": "string", "description": "Terse predicate; empty counts all."},
+            },
+            ["module"],
+        ),
+        _h_count_records,
+    ),
+    ToolSpec(
+        "list_related_records",
+        "List the records related to a record through a relationship field (e.g. an alert's "
+        "'indicators', 'assets' or 'incidents'). Returns a compact summary of each related "
+        "record. Use this to walk the investigation graph.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "field": {
+                    "type": "string",
+                    "description": "Relationship field on the record, e.g. 'indicators', 'assets'.",
+                },
+                "limit": _LIMIT,
+                "fields": _FIELDS,
+                "summary": _SUMMARY,
+            },
+            ["module", "ref", "field"],
+        ),
+        _h_list_related_records,
+    ),
+    ToolSpec(
+        "link_records",
+        "Relate one or more records to a record through its relationship field (e.g. link "
+        "indicators or assets onto an alert). related is a uuid (with related_module to "
+        "qualify it), a 'module:uuid', an IRI, or a list of those. Hides the __link wire "
+        "shape and IRI plumbing. Use list_related_records to confirm.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "field": {
+                    "type": "string",
+                    "description": "Relationship field to add to, e.g. 'indicators', 'assets'.",
+                },
+                "related": {
+                    "type": ["string", "array"],
+                    "items": {"type": "string"},
+                    "description": "Related record(s): uuid (needs related_module), 'module:uuid', "
+                    "IRI, or a list.",
+                },
+                "related_module": {
+                    "type": "string",
+                    "description": "Module of the related records, to qualify bare uuids "
+                    "(e.g. 'indicators').",
+                },
+            },
+            ["module", "ref", "field", "related"],
+        ),
+        _h_link_records,
+        mutating=True,
+    ),
+    ToolSpec(
+        "unlink_records",
+        "Remove one or more related records from a record's relationship field. The inverse "
+        "of link_records; the related records themselves are not deleted. Same related/"
+        "related_module forms as link_records.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "field": {"type": "string", "description": "Relationship field to remove from."},
+                "related": {
+                    "type": ["string", "array"],
+                    "items": {"type": "string"},
+                    "description": "Related record(s) to remove: uuid (needs related_module), "
+                    "'module:uuid', IRI, or a list.",
+                },
+                "related_module": {
+                    "type": "string",
+                    "description": "Module of the related records, to qualify bare uuids.",
+                },
+            },
+            ["module", "ref", "field", "related"],
+        ),
+        _h_unlink_records,
+        mutating=True,
+    ),
+    ToolSpec(
+        "add_comment",
+        "Add a comment to a record -- the analyst annotation trail. Use it to record "
+        "investigation reasoning or a decision on the record itself. Hides the comments "
+        "module and its record linkage.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "text": {"type": "string", "description": "The comment body."},
+            },
+            ["module", "ref", "text"],
+        ),
+        _h_add_comment,
+        mutating=True,
+    ),
+    ToolSpec(
+        "list_comments",
+        "List a record's comments, each compacted to {text, by, at}. The human-readable "
+        "annotation trail for an investigation.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "limit": _LIMIT,
+            },
+            ["module", "ref"],
+        ),
+        _h_list_comments,
     ),
     ToolSpec(
         "list_picklists",
