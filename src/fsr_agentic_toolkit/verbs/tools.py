@@ -146,6 +146,19 @@ def _text_fields(client, module) -> list[str]:
             or str(f.get("form_type") or "").lower() in _TEXT_TYPES]
 
 
+def _picklist_fields(client, module) -> set[str]:
+    """The module's picklist field names, so the terse-predicate parser can lower
+    a bare ``status=Open`` to ``status.itemValue=Open``. Empty on a schema miss
+    (the predicate still compiles; it just won't add ``.itemValue`` for you)."""
+    try:
+        desc = client.describe_module(module)
+    except Exception:  # noqa: BLE001 - no schema means no .itemValue rewriting, not a failure
+        return set()
+    return {f["name"] for f in (desc.get("fields") or [])
+            if str(f.get("type") or "").lower() == "picklists"
+            or str(f.get("form_type") or "").lower() == "picklist"}
+
+
 def _h_search_records(client, *, module, term="", limit=30, fields=None, summary=True) -> Any:
     page = client.records(module).search(term, limit=limit)
     out = project(page, fields=fields, summary=summary)
@@ -178,6 +191,85 @@ def _h_query_records(
         body["limit"] = limit
     page = client.records(module).query(body)
     return project(page, fields=fields, summary=summary)
+
+
+def _h_find_records(client, *, module, where="", sort=None, limit=30, fields=None, summary=True) -> Any:
+    """Query a module with a terse predicate instead of filter JSON.
+
+    ``where`` is lowered to the query body by :mod:`._predicate` (it owns the
+    ``like`` wildcard and picklist ``.itemValue`` quirks), so the agent never
+    writes operator JSON or knows the Hydra schema. Empty ``where`` lists the
+    module.
+    """
+    from .._predicate import parse_predicate, parse_sort
+
+    filters, logic = parse_predicate(where, _picklist_fields(client, module))
+    body: dict[str, Any] = {"logic": logic, "filters": filters}
+    if sort:
+        body["sort"] = parse_sort(sort) if isinstance(sort, str) else sort
+    if limit:
+        body["limit"] = limit
+    return project(client.records(module).query(body), fields=fields, summary=summary)
+
+
+def _h_bulk_update_records(
+    client, *, module, set=None, where="", records=None, match="uuid",
+    limit=500, resolve_picklists=True, strict_picklists=True,
+) -> Any:
+    """Update many records in ONE call (one approval), not N single writes.
+
+    Two forms, exactly one required:
+    - ``where`` (a terse predicate) + ``set`` (fields to apply): every matching
+      record is updated with ``set``.
+    - ``records``: an explicit list of rows, each carrying the ``match`` field
+      (default ``uuid``) plus the fields to change.
+
+    Rows are matched by ``match`` and written through pyfsr ``bulk_upsert``; a row
+    without the match value is refused rather than silently CREATED.
+    """
+    from .._predicate import parse_predicate
+
+    if records is not None and (where or set):
+        raise ValueError("pass either records=[...] OR where=<predicate> + set={...}, not both")
+    if records is None:
+        if not where or not set:
+            raise ValueError("provide records=[...], or both where=<predicate> and set={...}")
+        filters, logic = parse_predicate(where, _picklist_fields(client, module))
+        page = client.records(module).query({"logic": logic, "filters": filters, "limit": limit})
+        members = page.get("hydra:member") if isinstance(page, dict) else getattr(page, "members", page)
+        rows = []
+        for rec in (members or []):
+            d = rec if isinstance(rec, dict) else to_jsonable(rec)
+            key = d.get(match) if isinstance(d, dict) else None
+            if key:
+                # The matched key always wins: a set that names the match field
+                # (e.g. uuid) must not redirect the write to another record.
+                rows.append({**set, match: key})
+    else:
+        rows = [dict(r) for r in records]
+
+    missing = [i for i, r in enumerate(rows) if not r.get(match)]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} row(s) have no '{match}' to match an existing record "
+            f"(indexes {missing[:5]}); a bulk update never creates records"
+        )
+    if not rows:
+        return {"ok": True, "matched": 0, "updated": 0, "failed": 0,
+                "note": "no records matched; nothing to update"}
+
+    result = client.records(module).bulk_upsert(
+        rows, parse=True, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
+    )
+    out: dict[str, Any] = {
+        "ok": bool(result.ok),
+        "matched": len(rows),
+        "updated": len(result.succeeded),
+        "failed": len(result.failed),
+    }
+    if result.failed:
+        out["failures"] = [to_jsonable(f) for f in result.failed[:10]]
+    return out
 
 
 def _write_result(rec, data) -> Any:
@@ -1173,6 +1265,84 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["module"],
         ),
         _h_query_records,
+    ),
+    ToolSpec(
+        "find_records",
+        "Query a module with a terse predicate instead of filter JSON: "
+        "where=\"status=Open and severity=High\". Operators: = != > >= < <= , "
+        "~ for contains (name~\"Agent Lab\"), and 'in' for a set (status in Open,Investigating). "
+        "Combine clauses with 'and' OR 'or' (not both). Quote values with spaces. The tool owns "
+        "the FortiSOAR quirks for you -- contains adds SQL wildcards, and a picklist field (like "
+        "status/severity) is matched by its display value -- so you never write operator JSON or "
+        ".itemValue. Empty where lists the module. Returns a compact summary per record "
+        "(summary=true default; fields=[...] for exact keys). Sort with sort=\"createDate desc\".",
+        _obj(
+            {
+                "module": _MODULE,
+                "where": {
+                    "type": "string",
+                    "description": "Terse predicate, e.g. 'status=Open and severity=High'. "
+                    "Empty lists the module.",
+                },
+                "sort": {
+                    "type": "string",
+                    "description": "Terse sort, e.g. 'createDate desc' or 'severity asc, name'.",
+                },
+                "limit": _LIMIT,
+                "fields": _FIELDS,
+                "summary": _SUMMARY,
+            },
+            ["module"],
+        ),
+        _h_find_records,
+    ),
+    ToolSpec(
+        "bulk_update_records",
+        "Update MANY records in one call (one approval), instead of one update_record per record. "
+        "Two forms: (1) where=<predicate> + set={fields} updates every matching record -- e.g. "
+        "where=\"status=Open and source='Agent Lab'\", set={status:'Investigating'}; (2) records=[...] "
+        "updates an explicit list, each row carrying its uuid plus the fields to change. Rows are "
+        "matched by uuid and never created: a row with no uuid is refused. Friendly picklist values "
+        "(e.g. 'Investigating') resolve automatically. Returns {ok, matched, updated, failed}.",
+        _obj(
+            {
+                "module": _MODULE,
+                "where": {
+                    "type": "string",
+                    "description": "Terse predicate selecting the records to update (with 'set'). "
+                    "Same grammar as find_records.",
+                },
+                "set": {
+                    "type": "object",
+                    "description": "Field -> value mapping applied to every matched record (with 'where').",
+                },
+                "records": {
+                    "type": "array",
+                    "description": "Explicit rows to update, each {uuid, ...fields} (alternative to where+set).",
+                    "items": {"type": "object"},
+                },
+                "match": {
+                    "type": "string",
+                    "description": "Field used to match existing records (default 'uuid'). Never creates.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max records the where-form will touch (default 500).",
+                    "minimum": 1,
+                },
+                "resolve_picklists": {
+                    "type": "boolean",
+                    "description": "Map friendly picklist values to IRIs before sending (default true).",
+                },
+                "strict_picklists": {
+                    "type": "boolean",
+                    "description": "Raise pre-flight on an unresolvable picklist value (default true).",
+                },
+            },
+            ["module"],
+        ),
+        _h_bulk_update_records,
+        mutating=True,
     ),
     ToolSpec(
         "create_record",
