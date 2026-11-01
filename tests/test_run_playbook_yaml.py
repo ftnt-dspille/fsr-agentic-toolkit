@@ -56,7 +56,7 @@ def _run(status="finished", failure=None):
                            succeeded=status == "finished")
 
 
-def _wire(monkeypatch, *, gate=None, report=None, playbooks=None, publish_exc=None):
+def _wire(monkeypatch, *, gate=None, report=None, playbooks=None, publish_exc=None, restored=()):
     gate = gate or {"ok": True, "errors": [], "collection": "c", "playbooks": ["pb"]}
     report = report or {"new": ["pb"], "changed": [], "unchanged": [], "created": ["u1"],
                         "collection_uuid": "cu"}
@@ -68,7 +68,8 @@ def _wire(monkeypatch, *, gate=None, report=None, playbooks=None, publish_exc=No
         published.append(kw)
         if publish_exc:
             raise publish_exc
-        return {"ok": True, "collection": "c", "playbooks": ["pb"], "result": report}
+        return {"ok": True, "collection": "c", "playbooks": ["pb"], "result": report,
+                "restored": list(restored)}
 
     monkeypatch.setattr(T, "_h_compile_playbook_yaml", lambda _c, **kw: gate)
     monkeypatch.setattr(R, "_uuid_of", lambda _y, name: f"uuid-{name}")
@@ -165,6 +166,17 @@ def test_cleanup_keeps_a_collection_that_still_holds_other_playbooks(monkeypatch
     r = R.run_playbook_yaml(YAML, cleanup=True)
     assert client.playbooks.deleted == ["u1"] and not client.workflow_collections.deleted
     assert any("collection was kept" in u for u in r.unknowns)
+
+
+def test_cleanup_removes_a_playbook_this_call_restored_from_the_recycle_bin(monkeypatch):
+    # A rerun after a delete: publish restores the soft-deleted row first, so deploy
+    # lists it as unchanged. It was not live before this call, so cleanup removes it.
+    client, _ = _wire(monkeypatch, restored=["workflows/uuid-pb"],
+                      report={"new": [], "changed": [], "unchanged": ["pb"], "created": [],
+                              "collection_uuid": "cu"})
+    r = R.run_playbook_yaml(YAML, cleanup=True)
+    assert client.playbooks.deleted == ["uuid-pb"]
+    assert not any("cleanup skipped" in u for u in r.unknowns)
 
 
 def test_spec_is_a_tier2_write_not_destructive():

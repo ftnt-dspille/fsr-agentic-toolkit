@@ -146,6 +146,22 @@ def _text_fields(client, module) -> list[str]:
             or str(f.get("form_type") or "").lower() in _TEXT_TYPES]
 
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def _picklist_fields(client, module) -> set[str]:
+    """The module's picklist field names, so the terse-predicate parser can lower
+    a bare ``status=Open`` to ``status.itemValue=Open``. Empty on a schema miss
+    (the predicate still compiles; it just won't add ``.itemValue`` for you)."""
+    try:
+        desc = client.describe_module(module)
+    except Exception:  # noqa: BLE001 - no schema means no .itemValue rewriting, not a failure
+        return set()
+    return {f["name"] for f in (desc.get("fields") or [])
+            if str(f.get("type") or "").lower() == "picklists"
+            or str(f.get("form_type") or "").lower() == "picklist"}
+
+
 def _h_search_records(client, *, module, term="", limit=30, fields=None, summary=True) -> Any:
     page = client.records(module).search(term, limit=limit)
     out = project(page, fields=fields, summary=summary)
@@ -180,6 +196,108 @@ def _h_query_records(
     return project(page, fields=fields, summary=summary)
 
 
+def _h_find_records(client, *, module, where="", sort=None, limit=30, fields=None, summary=True) -> Any:
+    """Query a module with a terse predicate instead of filter JSON.
+
+    ``where`` is lowered to the query body by :mod:`._predicate` (it owns the
+    ``like`` wildcard and picklist ``.itemValue`` quirks), so the agent never
+    writes operator JSON or knows the Hydra schema. Empty ``where`` lists the
+    module.
+    """
+    from .._predicate import parse_predicate, parse_sort
+
+    filters, logic = parse_predicate(where, _picklist_fields(client, module))
+    body: dict[str, Any] = {"logic": logic, "filters": filters}
+    if sort:
+        body["sort"] = parse_sort(sort) if isinstance(sort, str) else sort
+    if limit:
+        body["limit"] = limit
+    return project(client.records(module).query(body), fields=fields, summary=summary)
+
+
+def _h_bulk_update_records(
+    client, *, module, set=None, where="", records=None, match="uuid",
+    limit=500, resolve_picklists=True, strict_picklists=True,
+) -> Any:
+    """Update many records in ONE call (one approval), not N single writes.
+
+    Two forms, exactly one required:
+    - ``where`` (a terse predicate) + ``set`` (fields to apply): every matching
+      record is updated with ``set``.
+    - ``records``: an explicit list of rows, each carrying the ``match`` field
+      (default ``uuid``) plus the fields to change.
+
+    Rows are matched by ``match`` and written through pyfsr ``bulk_upsert``; a row
+    without the match value is refused rather than silently CREATED.
+    """
+    from .._predicate import parse_predicate
+
+    if records is not None and (where or set):
+        raise ValueError("pass either records=[...] OR where=<predicate> + set={...}, not both")
+    if records is None:
+        if not where or not set:
+            raise ValueError("provide records=[...], or both where=<predicate> and set={...}")
+        filters, logic = parse_predicate(where, _picklist_fields(client, module))
+        page = client.records(module).query({"logic": logic, "filters": filters, "limit": limit})
+        members = page.get("hydra:member") if isinstance(page, dict) else getattr(page, "members", page)
+        rows = []
+        for rec in (members or []):
+            d = rec if isinstance(rec, dict) else to_jsonable(rec)
+            key = d.get(match) if isinstance(d, dict) else None
+            if key:
+                # The matched key always wins: a set that names the match field
+                # (e.g. uuid) must not redirect the write to another record.
+                rows.append({**set, match: key})
+    else:
+        rows = [dict(r) for r in records]
+
+    missing = [i for i, r in enumerate(rows) if not r.get(match)]
+    if missing:
+        raise ValueError(
+            f"{len(missing)} row(s) have no '{match}' to match an existing record "
+            f"(indexes {missing[:5]}); a bulk update never creates records"
+        )
+    # Every ref must be a bare uuid, so the update can only ever hit
+    # /api/3/<this module>/<uuid>. An IRI or a `othermodule:uuid` shorthand in a
+    # ref would otherwise redirect the write to another module/record, past the
+    # module the caller (and the approval) authorised.
+    bad = [str(r[match]) for r in rows if not _UUID_RE.match(str(r[match]))]
+    if bad:
+        raise ValueError(
+            f"{len(bad)} ref(s) are not a bare uuid ({bad[:3]}); bulk_update_records writes only "
+            "to the given module by uuid, so an IRI or module:uuid ref is refused"
+        )
+    if not rows:
+        return {"ok": True, "matched": 0, "updated": 0, "failed": 0,
+                "note": "no records matched; nothing to update"}
+
+    # A true PARTIAL update per matched record (PUT /api/3/<module>/<uuid>), not a
+    # bulk UPSERT: the /bulkupsert route validates each row as a whole record (it
+    # rejects an update that omits a required field like `name`, live-verified on
+    # 8.0.1), so it cannot carry a fields-only change. The agent still makes ONE
+    # gated call -- the one-approval benefit is at the tool-call boundary, not the
+    # HTTP boundary -- so N records are changed behind one approval, as intended.
+    recs = client.records(module)
+    updated, failures = 0, []
+    for row in rows:
+        ref = row[match]
+        data = {k: v for k, v in row.items() if k != match}
+        try:
+            recs.update(ref, data, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists)
+            updated += 1
+        except Exception as exc:  # noqa: BLE001 - collect per-row failures, don't abort the batch
+            failures.append({"ref": ref, "error": str(exc)})
+    out: dict[str, Any] = {
+        "ok": not failures,
+        "matched": len(rows),
+        "updated": updated,
+        "failed": len(failures),
+    }
+    if failures:
+        out["failures"] = failures[:10]
+    return out
+
+
 def _write_result(rec, data) -> Any:
     """Compact write confirmation: identity summary + the fields the caller sent.
 
@@ -212,6 +330,98 @@ def _h_update_record(client, *, module, ref, data, resolve_picklists=True, stric
 def _h_delete_record(client, *, module, ref, hard=False) -> Any:
     client.records(module).delete(ref, hard=hard)
     return {"deleted": ref, "module": module, "hard": bool(hard)}
+
+
+def _h_count_records(client, *, module, where="") -> Any:
+    """Count records matching a terse predicate, without pulling any rows.
+
+    Uses the module's ``hydra:totalItems`` (a limit=1 fetch), so "how many Open
+    criticals" is a cheap decision input, not a full query that risks the output
+    cap. Empty ``where`` counts the whole module.
+    """
+    from .._predicate import parse_predicate
+
+    filters, logic = parse_predicate(where, _picklist_fields(client, module))
+    body = {"logic": logic, "filters": filters} if filters else None
+    return {"module": module, "where": where or None, "count": client.records(module).count(body)}
+
+
+def _related_refs(related, related_module) -> list[str]:
+    """Normalise related record refs to IRIs/``module:uuid`` that link accepts.
+
+    A bare uuid is ambiguous (the related module usually differs), so it is only
+    accepted when ``related_module`` is given to qualify it.
+    """
+    items = [related] if isinstance(related, str) else list(related)
+    out: list[str] = []
+    for r in items:
+        r = str(r)
+        if r.startswith("/api/") or ":" in r:
+            out.append(r)
+        elif related_module:
+            out.append(f"{related_module}:{r}")
+        else:
+            raise ValueError(
+                f"related ref {r!r} is a bare uuid: pass related_module, or give an "
+                "IRI (/api/3/<module>/<uuid>) or module:uuid"
+            )
+    return out
+
+
+def _h_link_records(client, *, module, ref, field, related, related_module=None) -> Any:
+    """Relate one or more records to ``ref`` through its relationship ``field``
+    (e.g. an alert's ``indicators`` or ``assets``). Hides the __link wire shape
+    and IRI plumbing."""
+    refs = _related_refs(related, related_module)
+    client.records(module).link(ref, field, refs)
+    return {"linked": {"module": module, "ref": ref, "field": field, "related": refs}, "count": len(refs)}
+
+
+def _h_unlink_records(client, *, module, ref, field, related, related_module=None) -> Any:
+    """Remove one or more related records from ``ref``'s relationship ``field``.
+    The inverse of link_records; the records themselves are not deleted."""
+    refs = _related_refs(related, related_module)
+    client.records(module).unlink(ref, field, refs)
+    return {"unlinked": {"module": module, "ref": ref, "field": field, "related": refs}, "count": len(refs)}
+
+
+def _h_list_related_records(client, *, module, ref, field, limit=50, fields=None, summary=True) -> Any:
+    """List the records related to ``ref`` through its relationship ``field``
+    (GET /api/3/<module>/<uuid>/<field>). Returns a compact summary each."""
+    from pyfsr.pagination import extract_members
+    from pyfsr.records import resolve_record_path
+
+    path = resolve_record_path(module, ref).rstrip("/") + f"/{field}"
+    members = extract_members(client.get(path, params={"$limit": limit}))
+    return {
+        "module": module, "ref": ref, "field": field,
+        "related": project(members, fields=fields, summary=summary),
+        "count": len(members),
+    }
+
+
+def _h_add_comment(client, *, module, ref, text) -> Any:
+    """Add a comment to a record (the analyst annotation trail). Hides the
+    comments module and its record linkage."""
+    from pyfsr.records import resolve_record_path
+
+    created = client.comments.create(text, record=resolve_record_path(module, ref))
+    cid = None
+    if isinstance(created, dict):
+        cid = created.get("uuid") or created.get("id") or created.get("@id")
+    return {"commented": {"module": module, "ref": ref}, "comment_id": cid}
+
+
+def _h_list_comments(client, *, module, ref, limit=30) -> Any:
+    """List a record's comments, newest-detail compacted to {text, by, at}."""
+    out: list[dict[str, Any]] = []
+    for c in client.records(module).comments(ref, limit=limit):
+        d = c if isinstance(c, dict) else to_jsonable(c)
+        by = d.get("createUser")
+        if isinstance(by, dict):
+            by = by.get("name") or by.get("loginid")
+        out.append({"text": d.get("comment") or d.get("content"), "by": by, "at": d.get("createDate")})
+    return {"module": module, "ref": ref, "comments": out, "count": len(out)}
 
 
 def _h_list_picklists(client) -> Any:
@@ -1175,6 +1385,84 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _h_query_records,
     ),
     ToolSpec(
+        "find_records",
+        "Query a module with a terse predicate instead of filter JSON: "
+        "where=\"status=Open and severity=High\". Operators: = != > >= < <= , "
+        "~ for contains (name~\"Agent Lab\"), and 'in' for a set (status in Open,Investigating). "
+        "Combine clauses with 'and' OR 'or' (not both). Quote values with spaces. The tool owns "
+        "the FortiSOAR quirks for you -- contains adds SQL wildcards, and a picklist field (like "
+        "status/severity) is matched by its display value -- so you never write operator JSON or "
+        ".itemValue. Empty where lists the module. Returns a compact summary per record "
+        "(summary=true default; fields=[...] for exact keys). Sort with sort=\"createDate desc\".",
+        _obj(
+            {
+                "module": _MODULE,
+                "where": {
+                    "type": "string",
+                    "description": "Terse predicate, e.g. 'status=Open and severity=High'. "
+                    "Empty lists the module.",
+                },
+                "sort": {
+                    "type": "string",
+                    "description": "Terse sort, e.g. 'createDate desc' or 'severity asc, name'.",
+                },
+                "limit": _LIMIT,
+                "fields": _FIELDS,
+                "summary": _SUMMARY,
+            },
+            ["module"],
+        ),
+        _h_find_records,
+    ),
+    ToolSpec(
+        "bulk_update_records",
+        "Update MANY records in one call (one approval), instead of one update_record per record. "
+        "Two forms: (1) where=<predicate> + set={fields} updates every matching record -- e.g. "
+        "where=\"status=Open and source='Agent Lab'\", set={status:'Investigating'}; (2) records=[...] "
+        "updates an explicit list, each row carrying its uuid plus the fields to change. Rows are "
+        "matched by uuid and never created: a row with no uuid is refused. Friendly picklist values "
+        "(e.g. 'Investigating') resolve automatically. Returns {ok, matched, updated, failed}.",
+        _obj(
+            {
+                "module": _MODULE,
+                "where": {
+                    "type": "string",
+                    "description": "Terse predicate selecting the records to update (with 'set'). "
+                    "Same grammar as find_records.",
+                },
+                "set": {
+                    "type": "object",
+                    "description": "Field -> value mapping applied to every matched record (with 'where').",
+                },
+                "records": {
+                    "type": "array",
+                    "description": "Explicit rows to update, each {uuid, ...fields} (alternative to where+set).",
+                    "items": {"type": "object"},
+                },
+                "match": {
+                    "type": "string",
+                    "description": "Field used to match existing records (default 'uuid'). Never creates.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max records the where-form will touch (default 500).",
+                    "minimum": 1,
+                },
+                "resolve_picklists": {
+                    "type": "boolean",
+                    "description": "Map friendly picklist values to IRIs before sending (default true).",
+                },
+                "strict_picklists": {
+                    "type": "boolean",
+                    "description": "Raise pre-flight on an unresolvable picklist value (default true).",
+                },
+            },
+            ["module"],
+        ),
+        _h_bulk_update_records,
+        mutating=True,
+    ),
+    ToolSpec(
         "create_record",
         "Create a record in a module. data is a field->value mapping; friendly picklist "
         "values (e.g. 'High') map to IRIs automatically -- set resolve_picklists=false to skip.",
@@ -1244,6 +1532,129 @@ _TOOLS: tuple[ToolSpec, ...] = (
         _h_delete_record,
         mutating=True,
         destructive=True,
+    ),
+    ToolSpec(
+        "count_records",
+        "Count records matching a terse predicate, WITHOUT pulling any rows -- a cheap "
+        "decision input (e.g. how many Open criticals). where uses the same grammar as "
+        "find_records (status=Open and severity=High); empty where counts the whole module. "
+        "Returns {module, where, count}.",
+        _obj(
+            {
+                "module": _MODULE,
+                "where": {"type": "string", "description": "Terse predicate; empty counts all."},
+            },
+            ["module"],
+        ),
+        _h_count_records,
+    ),
+    ToolSpec(
+        "list_related_records",
+        "List the records related to a record through a relationship field (e.g. an alert's "
+        "'indicators', 'assets' or 'incidents'). Returns a compact summary of each related "
+        "record. Use this to walk the investigation graph.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "field": {
+                    "type": "string",
+                    "description": "Relationship field on the record, e.g. 'indicators', 'assets'.",
+                },
+                "limit": _LIMIT,
+                "fields": _FIELDS,
+                "summary": _SUMMARY,
+            },
+            ["module", "ref", "field"],
+        ),
+        _h_list_related_records,
+    ),
+    ToolSpec(
+        "link_records",
+        "Relate one or more records to a record through its relationship field (e.g. link "
+        "indicators or assets onto an alert). related is a uuid (with related_module to "
+        "qualify it), a 'module:uuid', an IRI, or a list of those. Hides the __link wire "
+        "shape and IRI plumbing. Use list_related_records to confirm.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "field": {
+                    "type": "string",
+                    "description": "Relationship field to add to, e.g. 'indicators', 'assets'.",
+                },
+                "related": {
+                    "type": ["string", "array"],
+                    "items": {"type": "string"},
+                    "description": "Related record(s): uuid (needs related_module), 'module:uuid', "
+                    "IRI, or a list.",
+                },
+                "related_module": {
+                    "type": "string",
+                    "description": "Module of the related records, to qualify bare uuids "
+                    "(e.g. 'indicators').",
+                },
+            },
+            ["module", "ref", "field", "related"],
+        ),
+        _h_link_records,
+        mutating=True,
+    ),
+    ToolSpec(
+        "unlink_records",
+        "Remove one or more related records from a record's relationship field. The inverse "
+        "of link_records; the related records themselves are not deleted. Same related/"
+        "related_module forms as link_records.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "field": {"type": "string", "description": "Relationship field to remove from."},
+                "related": {
+                    "type": ["string", "array"],
+                    "items": {"type": "string"},
+                    "description": "Related record(s) to remove: uuid (needs related_module), "
+                    "'module:uuid', IRI, or a list.",
+                },
+                "related_module": {
+                    "type": "string",
+                    "description": "Module of the related records, to qualify bare uuids.",
+                },
+            },
+            ["module", "ref", "field", "related"],
+        ),
+        _h_unlink_records,
+        mutating=True,
+    ),
+    ToolSpec(
+        "add_comment",
+        "Add a comment to a record -- the analyst annotation trail. Use it to record "
+        "investigation reasoning or a decision on the record itself. Hides the comments "
+        "module and its record linkage.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "text": {"type": "string", "description": "The comment body."},
+            },
+            ["module", "ref", "text"],
+        ),
+        _h_add_comment,
+        mutating=True,
+    ),
+    ToolSpec(
+        "list_comments",
+        "List a record's comments, each compacted to {text, by, at}. The human-readable "
+        "annotation trail for an investigation.",
+        _obj(
+            {
+                "module": _MODULE,
+                "ref": _REF,
+                "limit": _LIMIT,
+            },
+            ["module", "ref"],
+        ),
+        _h_list_comments,
     ),
     ToolSpec(
         "list_picklists",
