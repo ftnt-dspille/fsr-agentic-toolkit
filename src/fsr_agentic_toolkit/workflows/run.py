@@ -137,10 +137,19 @@ def _set_variable_values(client: Any, run_pk: str | None, yaml_text: str) -> dic
     return out
 
 
-def _cleanup(client: Any, run: WorkflowRun, report: dict[str, Any]) -> None:
-    """Delete only what this call created. Anything pre-existing is left alone."""
+def _cleanup(client: Any, run: WorkflowRun, report: dict[str, Any],
+             restored: dict[str, str] | None = None) -> None:
+    """Delete only what this call created. Anything pre-existing is left alone.
+
+    ``restored`` maps playbook name -> uuid for rows this call brought back from the
+    recycle bin. Deploy then lists them as unchanged, but they were not live before
+    this call, so they count as created (otherwise a delete-and-rerun never cleans up).
+    """
+    restored = restored or {}
     created = list(report.get("created") or [])
-    untouched = list(report.get("changed") or []) + list(report.get("unchanged") or [])
+    created += [u for u in restored.values() if u not in created]
+    untouched = [n for n in list(report.get("changed") or []) + list(report.get("unchanged") or [])
+                 if n not in restored]
     if untouched:
         run.unknown("cleanup skipped: the collection already held playbooks this call did "
                     "not create, so nothing was deleted")
@@ -299,7 +308,10 @@ def run_playbook_yaml(yaml_text: str, *, playbook: str = "", inputs: dict | None
                     "playbook would orphan it; re-run with cleanup=true once it finishes")
     elif cleanup:
         try:
-            _cleanup(client, run, report)
+            back = {w.split("/", 1)[1] for w in pub.get("restored") or [] if w.startswith("workflows/")}
+            names = list(report.get("changed") or []) + list(report.get("unchanged") or [])
+            _cleanup(client, run, report,
+                     {n: u for n in names if (u := _uuid_of(yaml_text, n)) in back})
         except Exception as exc:  # noqa: BLE001
             run.unknown(f"cleanup failed: {exc}")
     elif status == "answered":
