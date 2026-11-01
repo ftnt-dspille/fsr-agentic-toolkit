@@ -52,8 +52,60 @@ def _when_idle(read: Any, states: list[str], timeout: float = 600.0,
             time.sleep(IDLE_INTERVAL if interval is None else interval)
 
 
+def _wait_published(admin: Any, module: str, timeout: float = 180.0,
+                    interval: float = 5.0) -> bool:
+    """Poll until ``module`` shows up in the live schema, or ``timeout``.
+
+    ``admin.publish()`` returns once it has confirmed the migrate via
+    ``/api/publish/error``, but the live ``model_metadatas`` that
+    :meth:`is_published` reads can lag that confirmation by a few seconds on
+    8.0+, so a single check right after publish reads ``False`` for a module that
+    is in fact committing. Poll instead, riding any migrate-transient 503."""
+    import time
+
+    from pyfsr.exceptions import is_migrate_transient
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if admin.is_published(module):
+                return True
+        except Exception as exc:
+            if not is_migrate_transient(exc):
+                raise
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
 def _modname(p: Any) -> str:
     return str(getattr(p, "module", None) or (p.get("module") if isinstance(p, dict) else p))
+
+
+def _default_probe(fields: list[dict] | None) -> dict:
+    """A create-probe record that satisfies the module's required fields.
+
+    The verify step creates and removes one record to prove write access. A fixed
+    ``{"name": ...}`` fails with HTTP 400 on a module whose required field is
+    something else (e.g. ``hostname``), making a fully-provisioned module report
+    "partial". Fill each required field with a typed placeholder instead; a
+    required picklist is left out (no safe value to guess) and falls back to name."""
+    probe: dict[str, Any] = {}
+    for f in fields or []:
+        if not f.get("required"):
+            continue
+        name, ftype = f.get("name"), str(f.get("type", "")).lower()
+        if not name:
+            continue
+        if ftype in ("integer", "number", "decimal", "long"):
+            probe[name] = 1
+        elif ftype in ("boolean", "checkbox"):
+            probe[name] = False
+        elif ftype in ("picklist", "multiselectpicklist", "lookup", "manytomany", "onetomany"):
+            continue  # no safe value to guess for a constrained field
+        else:
+            probe[name] = "provision-probe"
+    return probe or {"name": "provision probe"}
 
 
 def provision_module(module: str, label: str = "", plural: str = "",
@@ -135,7 +187,9 @@ def provision_module(module: str, label: str = "", plural: str = "",
             return run.result("blocked")
         if progress:
             run.evidence("schema", "publish_progress", " -> ".join(progress))
-        ok = bool(admin.is_published(module))
+        # The live schema can lag publish()'s own completion check, so poll rather
+        # than read is_published once (a single read races the migrate on 8.0+).
+        ok = _wait_published(admin, module)
         run.finding(f"published {module}" if ok else f"publish did not make {module} live",
                     [pev, run.evidence("module", module, f"published={ok}")], "high")
         if not ok:
@@ -162,7 +216,7 @@ def provision_module(module: str, label: str = "", plural: str = "",
     else:
         run.finding(f"the caller still cannot read {module}: {acc}. Fix: {A.fix_for(acc)}",
                     [rev], "high")
-    record = probe_record or {"name": "provision probe"}
+    record = probe_record or _default_probe(fields)
     cacc, ccode, cexcerpt = A.probe_create(module, record, client)
     cev = run.evidence("permission", f"create /api/3/{module}", f"HTTP {ccode}: {cexcerpt[:120]}")
     if cacc == "ok":
