@@ -381,7 +381,7 @@ wheels = [
 
 [[package]]
 name = "fsr-agentic-toolkit"
-version = "0.1.13"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "fsr-playbooks" },
