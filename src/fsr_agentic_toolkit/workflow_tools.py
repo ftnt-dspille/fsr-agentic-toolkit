@@ -71,10 +71,10 @@ def _verify_effect(*, module: str = "", uuid: str = "", fields: dict | None = No
     return verify_effect(module=module, uuid=uuid, fields=fields, assertions=assertions)
 
 
-def _orient(*, goal: str = "", modules: list | None = None):
+def _orient(*, goal: str = "", modules: list | None = None, fresh: bool = False):
     from .workflows.orient import orient
 
-    return orient(goal=goal, modules=modules)
+    return orient(goal=goal, modules=modules, fresh=fresh)
 
 
 def _provision_module(*, module: str, label: str = "", plural: str = "",
@@ -167,7 +167,9 @@ WORKFLOW_SPECS: tuple[ToolSpec, ...] = (
         "What this box has for a goal, in one call: each named module's real field names and "
         "picklist values, whether the caller can read it (and if not, which break: unpublished, "
         "role or team, with the fix), and the configured connectors matching the goal.",
-        _obj({"goal": _STR, "modules": _STRS}),
+        _obj({"goal": _STR, "modules": _STRS,
+              "fresh": {"type": "boolean",
+                        "description": "Skip the 2-minute cache (after you changed the box)."}}),
         _wf(_orient),
         workflow=True,
         aliases=("orient",),

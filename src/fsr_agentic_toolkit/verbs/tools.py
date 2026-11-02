@@ -31,9 +31,11 @@ message and self-correct.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+from datetime import UTC
 from typing import Any
 
 from pyfsr.exceptions import (
@@ -127,8 +129,21 @@ def _h_describe_module(client, *, module: str) -> Any:
     return client.describe_module(module)
 
 
-def _h_get_record(client, *, module, ref, fields=None, summary=False) -> Any:
-    rec = client.records(module).get(ref)
+_IRI_RE = re.compile(r"^/api/3/([A-Za-z0-9_]+)/([^/?#]+)$")
+
+
+def _module_from_ref(module, ref) -> str:
+    """The module a ref names: the caller's, or the one inside an IRI ref."""
+    if module:
+        return module
+    m = _IRI_RE.match(str(ref or ""))
+    if not m:
+        raise ValueError("pass module, or a full IRI ref such as /api/3/alerts/<uuid>")
+    return m.group(1)
+
+
+def _h_get_record(client, *, ref, module=None, fields=None, summary=False) -> Any:
+    rec = client.records(_module_from_ref(module, ref)).get(ref)
     return project(rec, fields=fields, summary=summary)
 
 
@@ -187,6 +202,7 @@ def _h_search_records(client, *, module, term="", limit=30, fields=None, summary
 def _h_query_records(
     client, *, module, filters=None, logic="AND", sort=None, limit=30, fields=None, summary=True
 ) -> Any:
+    _check_filters(client, module, filters or [], logic)
     body: dict[str, Any] = {"logic": logic, "filters": filters or []}
     if sort:
         body["sort"] = sort
@@ -194,6 +210,45 @@ def _h_query_records(
         body["limit"] = limit
     page = client.records(module).query(body)
     return project(page, fields=fields, summary=summary)
+
+
+def _module_field_names(client, module) -> set[str]:
+    try:
+        desc = client.describe_module(module)
+    except Exception:  # noqa: BLE001 - no schema means the field check is skipped
+        return set()
+    return {f["name"] for f in (desc.get("fields") or []) if isinstance(f, dict) and f.get("name")}
+
+
+def _check_filters(client, module, filters, logic) -> None:
+    """Refuse a query FortiSOAR would silently widen.
+
+    The query API drops a filter it cannot read (no field, an unknown field, a
+    bad logic) and returns every record instead of an error, so a typo reads as
+    "all of these match". Checked here so the agent gets the mistake, not rows.
+    """
+    if str(logic).upper() not in ("AND", "OR"):
+        raise ValueError(f"logic must be AND or OR, not {logic!r}")
+    if not isinstance(filters, list):
+        raise ValueError("filters must be a list of {field, operator, value} objects")  # noqa: TRY004
+    known = _module_field_names(client, module)
+    for f in filters:
+        if not isinstance(f, dict):
+            raise ValueError(f"each filter must be an object, got {f!r}")  # noqa: TRY004
+        if "filters" in f:  # a nested group
+            _check_filters(client, module, f["filters"], f.get("logic", "AND"))
+            continue
+        if not f.get("field") or not f.get("operator"):
+            raise ValueError(f"filter {f!r} needs both 'field' and 'operator'")
+        root = str(f["field"]).split(".", 1)[0]
+        if known and root not in known:
+            import difflib
+
+            close = difflib.get_close_matches(root, sorted(known), n=5, cutoff=0.6)
+            raise ValueError(
+                f"{module} has no field {root!r}"
+                + (f"; did you mean one of {close}?" if close else "; describe_module lists the fields")
+            )
 
 
 def _h_find_records(client, *, module, where="", sort=None, limit=30, fields=None, summary=True) -> Any:
@@ -298,7 +353,75 @@ def _h_bulk_update_records(
     return out
 
 
-def _write_result(rec, data) -> Any:
+_DATE_TYPES = {"datetime", "date"}
+
+
+def _coerce_dates(client, module, data) -> tuple[Any, list[str]]:
+    """ISO date strings -> the epoch seconds FortiSOAR date fields store.
+
+    The API rejects an ISO string on a date field with a misleading type error,
+    so convert the ones whose schema says date. Returns (data, converted names).
+    """
+    if not isinstance(data, dict):
+        return data, []
+    try:
+        desc = client.describe_module(module)
+    except Exception:  # noqa: BLE001 - no schema, send the data as given
+        return data, []
+    dates = {f["name"] for f in (desc.get("fields") or []) if isinstance(f, dict)
+             and str(f.get("type") or "").lower() in _DATE_TYPES}
+    from datetime import datetime
+
+    out, converted = dict(data), []
+    for k, v in data.items():
+        if k in dates and isinstance(v, str) and not v.strip().lstrip("-").isdigit():
+            try:
+                dt = datetime.fromisoformat(v.strip())
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            out[k] = int(dt.timestamp())
+            converted.append(k)
+    return out, converted
+
+
+def _norm(v: Any) -> Any:
+    if isinstance(v, dict):
+        return v.get("@id") or v.get("itemValue") or v.get("uuid") or json.dumps(v, sort_keys=True)
+    if isinstance(v, list):
+        return sorted(str(_norm(x)) for x in v)
+    return v
+
+
+def _readback(client, module, rec_json, data) -> dict[str, Any]:
+    """Read the record back and compare the written fields to what is stored.
+
+    A write that answers 200 can still drop a field (an unknown name, a value the
+    module coerced away). The comparison is against the record as stored now.
+    """
+    ref = rec_json.get("@id") or rec_json.get("uuid")
+    if not ref:
+        return {"verified": None, "note": "the write returned no id to read back"}
+    try:
+        fresh = to_jsonable(client.records(module).get(ref))
+    except Exception as exc:  # noqa: BLE001 - say what could not be checked
+        return {"verified": None, "note": f"read-back failed: {exc}"}
+    if not isinstance(fresh, dict):
+        return {"verified": None, "note": "read-back returned no record"}
+    mismatches: dict[str, Any] = {}
+    for k in data:
+        if k not in fresh:
+            mismatches[k] = {"stored": "<absent: not a field of this module?>"}
+        elif k in rec_json and _norm(fresh[k]) != _norm(rec_json[k]):
+            mismatches[k] = {"returned": rec_json[k], "stored": fresh[k]}
+    out: dict[str, Any] = {"verified": not mismatches}
+    if mismatches:
+        out["mismatches"] = mismatches
+    return out
+
+
+def _write_result(rec, data, client=None, module=None, converted=None) -> Any:
     """Compact write confirmation: identity summary + the fields the caller sent.
 
     A full record (an alert is ~6 KB) overflows the output cap, so returning it
@@ -312,19 +435,25 @@ def _write_result(rec, data) -> Any:
         rec_json = to_jsonable(rec)
         if isinstance(rec_json, dict):
             out["written"] = {k: rec_json.get(k, "<not echoed>") for k in data}
+            if client is not None and module:
+                out["readback"] = _readback(client, module, rec_json, data)
+        if converted:
+            out["converted_dates"] = converted
     return out
 
 
 def _h_create_record(client, *, module, data, resolve_picklists=True, strict_picklists=True) -> Any:
+    data, converted = _coerce_dates(client, module, data)
     rec = client.records(module).create(data, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists)
-    return _write_result(rec, data)
+    return _write_result(rec, data, client, module, converted)
 
 
 def _h_update_record(client, *, module, ref, data, resolve_picklists=True, strict_picklists=True) -> Any:
+    data, converted = _coerce_dates(client, module, data)
     rec = client.records(module).update(
         ref, data, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
     )
-    return _write_result(rec, data)
+    return _write_result(rec, data, client, module, converted)
 
 
 def _h_delete_record(client, *, module, ref, hard=False) -> Any:
@@ -517,12 +646,51 @@ def _h_get_playbook_run(client, *, run_pk) -> Any:
     return to_jsonable(client.playbooks.get_execution(run_pk))
 
 
+_AI_TERMINAL = ("completed", "failed")
+
+
+def _investigation_out(client, task_id, status, *, waited=None, timeout=None) -> dict[str, Any]:
+    out: dict[str, Any] = {"investigation_task_id": task_id, "status": status}
+    if status in _AI_TERMINAL:
+        out["result"] = to_jsonable(client.ai.get_result(task_id))
+    else:
+        out["finished"] = False
+        out["next"] = (f"get_investigation_result(task_id='{task_id}', wait=true): the "
+                       "investigation is still running; do not compare or conclude on a partial run")
+    if waited is not None:
+        out["waited_seconds"] = round(waited)
+        if status not in _AI_TERMINAL and timeout is not None:
+            out["timed_out"] = True
+    return out
+
+
+def _wait_investigation(client, task_id, timeout) -> tuple[str, float]:
+    import time
+
+    start = time.monotonic()
+    status = client.ai.get_status(task_id)
+    while status not in _AI_TERMINAL and time.monotonic() - start < float(timeout):
+        time.sleep(5)
+        status = client.ai.get_status(task_id)
+    return status, time.monotonic() - start
+
+
 def _h_run_fortiai_investigation(client, *, ref, wait=False, timeout=600) -> Any:
-    return client.ai.investigate_alert(ref, wait=bool(wait), timeout=timeout)
+    started = client.ai.start_alert_investigation(ref)
+    task_id = started.task_id
+    if not task_id:
+        raise RuntimeError("FortiAI accepted the request but returned no task id; is AI Investigation configured?")
+    if not wait:
+        return _investigation_out(client, task_id, started.status or "pending")
+    status, waited = _wait_investigation(client, task_id, timeout)
+    return _investigation_out(client, task_id, status, waited=waited, timeout=timeout)
 
 
-def _h_get_investigation_result(client, *, task_id) -> Any:
-    return {"status": client.ai.get_status(task_id), "result": client.ai.get_result(task_id)}
+def _h_get_investigation_result(client, *, task_id, wait=False, timeout=600) -> Any:
+    if wait:
+        status, waited = _wait_investigation(client, task_id, timeout)
+        return _investigation_out(client, task_id, status, waited=waited, timeout=timeout)
+    return _investigation_out(client, task_id, client.ai.get_status(task_id))
 
 
 def _h_list_ai_config(client) -> Any:
@@ -543,7 +711,18 @@ def _h_call_registered_mcp_tool(client, *, server, tool, arguments=None, token=N
     # result.ok reads FortiSOAR's own {"status": ...} envelope; a third-party server has no
     # status, so a call that came back without an error is the success signal there.
     ok = result.ok if result.status is not None else result.error is None
-    return {"server": server, "tool": tool, "ok": ok, "result": result.result, "error": result.error}
+    error = result.error
+    # The MCP protocol reports a tool's own failure inside a successful reply
+    # (isError on the result); FortiSOAR's envelope does not look there.
+    body = result.result
+    if ok and isinstance(body, dict) and body.get("isError"):
+        ok = False
+        texts = [c.get("text", "") for c in body.get("content") or [] if isinstance(c, dict)]
+        error = error or ("; ".join(t for t in texts if t) or "the tool reported an error")
+    out = {"server": server, "tool": tool, "ok": ok, "result": body, "error": error}
+    if ok and body in (None, "", [], {}):
+        out["note"] = "the tool returned nothing; treat it as no answer, not as an empty result set"
+    return out
 
 
 # -- identity / onboarding ----------------------------------------------------
@@ -634,17 +813,79 @@ def _h_list_connector_operations(client, *, connector, version=None) -> Any:
     return {"connector": connector, "operations": slim, "count": len(slim)}
 
 
-def _h_install_connector(client, *, name=None, path=None, version=None, replace=False, wait=True, timeout=300.0) -> Any:
+def _bundle_identity(path) -> tuple[str | None, str | None]:
+    """(name, version) from a connector .tgz's info.json, or (None, None)."""
+    import tarfile
+
+    try:
+        with tarfile.open(path, "r:*") as tar:
+            for m in tar.getmembers():
+                if m.isfile() and m.name.count("/") <= 1 and m.name.endswith("info.json"):
+                    info = json.loads(tar.extractfile(m).read())  # type: ignore[union-attr]
+                    return info.get("name"), str(info.get("version") or "") or None
+    except (OSError, tarfile.TarError, ValueError):
+        pass
+    return None, None
+
+
+_STALE_WORKER_SECONDS = 180
+
+
+def _settled_version(client, name, want, *, timeout=60.0) -> str | None:
+    """Poll until the box reports ``want`` installed (or timeout); the version seen."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    seen = None
+    while True:
+        with contextlib.suppress(Exception):
+            client.connectors.clear_cache()
+        with contextlib.suppress(Exception):
+            seen = client.connectors.resolve_version(name)
+        if seen == want or time.monotonic() >= deadline:
+            return seen
+        time.sleep(5)
+
+
+def _h_install_connector(client, *, name=None, path=None, version=None, replace=False, wait=True,
+                         timeout=300.0, allow_same_version=False) -> Any:
+    warnings: list[str] = []
+    bundle_name = bundle_version = None
     if path:
+        bundle_name, bundle_version = _bundle_identity(path)
+        installed = None
+        if bundle_name:
+            with contextlib.suppress(Exception):
+                installed = client.connectors.resolve_version(bundle_name)
+        if installed and bundle_version and installed == bundle_version:
+            if not allow_same_version:
+                raise ValueError(
+                    f"{bundle_name} {bundle_version} is already installed. Reinstalling the same version "
+                    f"leaves the box's workers running the OLD code for minutes. Bump the version in "
+                    f"info.json and rebuild, or pass allow_same_version=true and expect stale results "
+                    f"for about {_STALE_WORKER_SECONDS}s."
+                )
+            replace = True
+            warnings.append(f"same-version reinstall: workers may run the previous code for about "
+                            f"{_STALE_WORKER_SECONDS}s; re-run operations after that before judging the change")
         result = client.connectors.install_from_file(path, replace=replace, wait=wait, timeout=timeout)
     elif name:
         result = client.connectors.install(name, version=version, wait=wait, timeout=timeout)
     else:
         raise ValueError("install_connector requires 'name' (Content Hub) or 'path' (local .tgz)")
     out: dict[str, Any] = {"install": to_jsonable(result)}
-    probe = name
+    probe = name or bundle_name
     if probe is None and isinstance(result, dict):
         probe = result.get("name")
+    want = bundle_version or version
+    if probe and want and wait:
+        seen = _settled_version(client, probe, want)
+        out["installed_version"] = seen
+        if seen != want:
+            warnings.append(f"the box still reports {probe} {seen}, not {want}; wait and check list_connectors")
+    if warnings:
+        out["warnings"] = warnings
+        out["retry_after_seconds"] = _STALE_WORKER_SECONDS
     if probe:
         try:
             out["healthcheck"] = to_jsonable(client.connectors.healthcheck(probe))
@@ -669,7 +910,35 @@ def _h_validate_connector(client, *, directory: str) -> Any:
         row = {"code": i.code, "message": i.message,
                "file": Path(i.file).name if i.file else None}
         out["errors" if i.severity == Severity.ERROR else "warnings"].append(row)
+    out["warnings"].extend(_config_field_warnings(Path(directory)))
     out["clean"] = not out["errors"]
+    return out
+
+
+def _config_field_warnings(directory) -> list[dict[str, Any]]:
+    """Configuration fields the code never reads, and HTTP code with nowhere to point.
+
+    An agent editing a scaffold tends to drop or orphan the server field; the
+    connector still validates and then calls a hard-coded host forever.
+    """
+    try:
+        info = json.loads((directory / "info.json").read_text())
+    except (OSError, ValueError):
+        return []
+    fields = [f.get("name") for f in ((info.get("configuration") or {}).get("fields") or [])
+              if isinstance(f, dict) and f.get("name")]
+    code = "\n".join(p.read_text(errors="ignore") for p in directory.glob("*.py"))
+    out = []
+    for name in fields:
+        if f"'{name}'" not in code and f'"{name}"' not in code:
+            out.append({"code": "config-field-unused", "file": "info.json",
+                        "message": f"configuration field {name!r} is never read by the code; "
+                                   "use it (config.get('" + name + "')) or remove it"})
+    uses_http = re.search(r"\b(requests|httpx|urllib)\b", code)
+    if uses_http and not any(re.search(r"url|server|host|endpoint", n, re.IGNORECASE) for n in fields):
+        out.append({"code": "config-no-server", "file": "info.json",
+                    "message": "the code makes HTTP calls but no configuration field holds the "
+                               "server/URL, so the host is hard-coded; keep a server field and read it"})
     return out
 
 
@@ -834,6 +1103,14 @@ def _h_compile_playbook_yaml(client, *, yaml_text) -> Any:
                        "and render empty at run time. Fix them before publish_playbook.")
     else:
         out["note"] = "Compiled and grounded checks clean. Safe to publish_playbook."
+    from ..workflows.yaml_lint import lint_yaml
+
+    traps = lint_yaml(yaml_text)
+    if traps:
+        out["ok"] = False
+        out["runtime_traps"] = traps
+        out["note"] = (f"Compiles, but {len(traps)} step(s) hit a known run-time trap (see "
+                       "runtime_traps: each has its fix). Fix them before publish_playbook.")
     return out
 
 
@@ -1104,17 +1381,19 @@ def _h_wait_for_playbook_run(
 
 # -- record upsert ----------------------------------------------------------
 def _h_upsert_record(client, *, module, data, key=None, resolve_picklists=True, strict_picklists=True) -> Any:
+    data, converted = _coerce_dates(client, module, data)
     rec = client.records(module).upsert(
         data, key=key, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
     )
-    return _write_result(rec, data)
+    return _write_result(rec, data, client, module, converted)
 
 
 def _h_get_or_create_record(client, *, module, data, key="uuid", resolve_picklists=True, strict_picklists=True) -> Any:
+    data, converted = _coerce_dates(client, module, data)
     record, created = client.records(module).get_or_create(
         data, key=key, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
     )
-    return {"record": _write_result(record, data), "created": bool(created)}
+    return {"record": _write_result(record, data, client, module, converted), "created": bool(created)}
 
 
 # -- scheduling -------------------------------------------------------------
@@ -1153,8 +1432,43 @@ def _h_trigger_schedule_now(client, *, name=None, task_id=None) -> Any:
     return to_jsonable(client.schedules.trigger_now(name=name, task_id=task_id))
 
 
-def _h_schedule_audit(client, *, name, run_limit=10) -> Any:
-    return to_jsonable(client.schedules.audit(name, run_limit=run_limit))
+_FIRE_LAG_SECONDS = 300  # beat records a fire minutes after it happens
+
+
+def _schedule_age_seconds(client, name) -> float | None:
+    from datetime import datetime
+
+    try:
+        row = client.schedules.get(name, typed=False) or {}
+        changed = row.get("date_changed")
+        if not changed:
+            return None
+        dt = datetime.fromisoformat(str(changed))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return (datetime.now(UTC) - dt).total_seconds()
+    except Exception:  # noqa: BLE001 - unknown age: report as-is
+        return None
+
+
+def _h_schedule_audit(client, *, name, run_limit=10, wait_for_fire=False, timeout=360) -> Any:
+    import time
+
+    report = to_jsonable(client.schedules.audit(name, run_limit=run_limit))
+    deadline = time.monotonic() + float(timeout)
+    while wait_for_fire and not (report.get("ever_fired") or report.get("runs")) and time.monotonic() < deadline:
+        time.sleep(15)
+        report = to_jsonable(client.schedules.audit(name, run_limit=run_limit))
+    if report.get("ever_fired") or report.get("runs"):
+        return report
+    age = _schedule_age_seconds(client, name)
+    if age is not None and age < _FIRE_LAG_SECONDS and report.get("enabled"):
+        # Not a failure yet: beat saves last_run_at/total_run_count late.
+        report["problems"] = [p for p in report.get("problems") or [] if "fire" not in p.lower()]
+        report["pending"] = True
+        report["note"] = (f"changed {int(age)}s ago; the scheduler records a fire a few minutes late. "
+                          "Call again with wait_for_fire=true instead of concluding it never fired.")
+    return report
 
 
 def _h_delete_schedule(client, *, name) -> Any:
@@ -1333,10 +1647,11 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "get_record",
-        "Fetch a single record by reference. Pass summary=true or fields=[...] to keep the result small.",
+        "Fetch a single record by reference. module may be omitted when ref is a full IRI "
+        "(/api/3/<module>/<uuid>). Pass summary=true or fields=[...] to keep the result small.",
         _obj(
             {"module": _MODULE, "ref": _REF, "fields": _FIELDS, "summary": _SUMMARY},
-            ["module", "ref"],
+            ["ref"],
         ),
         _h_get_record,
     ),
@@ -1838,9 +2153,15 @@ _TOOLS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         "get_investigation_result",
-        "Fetch the status and current result/verdict of a FortiAI investigation by its task_id.",
+        "Fetch the status and result/verdict of a FortiAI investigation by the investigation_task_id "
+        "run_fortiai_investigation returned (not any other job id). Pass wait=true to block until it "
+        "finishes; a result with finished=false is partial and must not be concluded on.",
         _obj(
-            {"task_id": {"type": "string", "description": "The investigation task id."}},
+            {
+                "task_id": {"type": "string", "description": "The investigation_task_id run_fortiai_investigation returned."},
+                "wait": {"type": "boolean", "description": "Block until the investigation finishes (or timeout)."},
+                "timeout": {"type": "integer", "description": "Max seconds to wait when wait=true (default 600)."},
+            },
             ["task_id"],
         ),
         _h_get_investigation_result,
@@ -2382,6 +2703,12 @@ _TOOLS: tuple[ToolSpec, ...] = (
                     "type": "integer",
                     "description": "Max recent runs to include (default 10).",
                 },
+                "wait_for_fire": {
+                    "type": "boolean",
+                    "description": "Poll until the schedule has fired (or timeout) instead of answering now. "
+                    "Use this rather than sleeping in a shell.",
+                },
+                "timeout": {"type": "integer", "description": "Max seconds for wait_for_fire (default 360)."},
             },
             ["name"],
         ),
@@ -2480,6 +2807,11 @@ _TOOLS: tuple[ToolSpec, ...] = (
                 },
                 "wait": {"type": "boolean", "description": "Block until the install job finishes (default true)."},
                 "timeout": {"type": "number", "description": "Max seconds to wait (default 300)."},
+                "allow_same_version": {
+                    "type": "boolean",
+                    "description": "Reinstall a .tgz whose version is already installed. Refused by default: "
+                    "the box keeps running the old code for minutes. Prefer bumping the version.",
+                },
             }
         ),
         _h_install_connector,
@@ -2756,6 +3088,7 @@ def _agent_error(exc: Exception, *, tool: str) -> dict[str, Any]:
                 snippet = snippet[:600] + "..."
             if snippet and snippet not in err["message"]:
                 err["body"] = snippet
+    _add_next_action(exc, err)
     # Flag an auth-mode mismatch so the agent stops retrying and reaches for a
     # tool that works with its credentials. These tools need a JWT (user or
     # admin login); an API key cannot perform them.
@@ -2776,6 +3109,41 @@ def _agent_error(exc: Exception, *, tool: str) -> dict[str, Any]:
         err["picklist"] = exc.picklist
         err["valid_values"] = exc.valid_values
     return {"error": err}
+
+
+_NEXT_BY_STATUS = {
+    401: (("The credentials were refused. Do not retry; the FSR_* login in the MCP server's env "
+          "needs fixing by the user."), None),
+    403: (("The user lacks permission for this. survey_box(modules=[...]) shows which access is "
+          "missing; provision_module grants it for a custom module."), None),
+    404: (("Not found. Look the exact name or uuid up (search_records, list_connectors, "
+          "list_playbook_runs) instead of guessing it again."), None),
+    409: ("It already exists or changed under you. Read it back, then update instead of create.", None),
+    429: ("Rate limited. Wait, then retry once.", 30),
+    502: ("The appliance service is restarting or busy. Wait, then retry once.", 30),
+    503: ("The appliance service is restarting or busy. Wait, then retry once.", 30),
+    504: ("The appliance took too long. Wait, then retry once with a smaller request.", 30),
+}
+
+
+def _add_next_action(exc: Exception, err: dict[str, Any]) -> None:
+    """Tell the agent what to do next instead of letting it improvise."""
+    text = f"{err.get('message', '')} {err.get('body', '')}".lower()
+    status = err.get("status_code")
+    if status == 400 and "/api/auth" in str(err.get("url", "")):
+        # Rapid logins exhaust the auth service's DB pool; retries make it worse.
+        err["next_action"] = ("The auth service is overloaded. Wait a minute before any other call; "
+                              "do not retry in a loop.")
+        err["retry_after_seconds"] = 60
+    elif status in _NEXT_BY_STATUS:
+        err["next_action"], after = _NEXT_BY_STATUS[status]
+        if after:
+            err["retry_after_seconds"] = after
+    elif isinstance(exc, TypeError):
+        err["next_action"] = "The arguments do not match the tool's schema. Re-read it and fix the call."
+    elif isinstance(exc, (TimeoutError, ConnectionError)) or "timed out" in text:
+        err["next_action"] = "The appliance did not answer in time. Wait, then retry once."
+        err["retry_after_seconds"] = 30
 
 
 def _output_cap() -> int:

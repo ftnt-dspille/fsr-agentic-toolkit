@@ -51,7 +51,16 @@ def build_playbook(goal: str, yaml_text: str = "", modules: list[str] | None = N
             run.finding(f"must fix before pushing: {msg}", [vev], "high")
         run.next("playbook_yaml_reference(topic=<step type>)", "the accepted keys for the step to fix", 1)
         run.next("build_playbook(goal, yaml_text=<fixed>)", "re-check the fixed playbook", 0)
-    run.data["verify"] = {"ready_to_push": ready, "required_fixes": fixes[:10]}
+    from .yaml_lint import lint_yaml
+    traps = lint_yaml(yaml_text)
+    if traps:
+        lev = run.evidence("playbook", "lint_yaml(playbook YAML)",
+                           "; ".join(f"{i['step']}: {i['code']}" for i in traps)[:500])
+        for i in traps[:10]:
+            run.finding(f"step {i['step']!r} would fail at run time: {i['message']}. Fix: {i['fix']}",
+                        [lev], "high")
+        ready = False
+    run.data["verify"] = {"ready_to_push": ready, "required_fixes": fixes[:10], "runtime_traps": traps[:10]}
     if blocked_modules or not ready:
         return run.result("partial")
     return run.result()

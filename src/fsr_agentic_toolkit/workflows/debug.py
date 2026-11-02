@@ -146,6 +146,20 @@ def _static_prerun_findings(run, yaml_text: str) -> int:
     return produced
 
 
+def _add_fix(run, step: object, template: object, evidence: list[str]) -> None:
+    """Attach a machine-applicable edit, so repair_playbook applies it rather than
+    re-parsing the finding's prose."""
+    if not isinstance(template, str):
+        return
+    from .repair import _PREFIX_BEFORE_JINJA
+    new = _PREFIX_BEFORE_JINJA.sub("", template, count=1)
+    if new != template:
+        run.data.setdefault("fixes", []).append(
+            {"kind": "replace", "step": str(step), "old": template, "new": new,
+             "label": "Fixed the doubled IRI", "evidence": evidence,
+             "why": "dropped the /api/3/<module>/ prefix; the value is already a full IRI"})
+
+
 def _implicated(rendered: Any, error: str | None) -> bool:
     """A rendered argument value that shows up inside the runtime error (a URL,
     an id) is the argument the failing call was built from."""
@@ -289,6 +303,8 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
             claim = (f"Step {d.get('step')!r} argument {d.get('arg_path')} renders the exact "
                      f"value the failing call reports ({str(rendered)[:120]!r}): likely root cause")
         run.finding(claim, cites, "high")
+        if doubled:
+            _add_fix(run, d.get("step"), d.get("template"), cites)
         bad.append(d)
     # Without the library's render diagnostics (its run-env probes are unshipped), the
     # same doubled IRI is still provable from two facts: the failing call's own URL is
@@ -301,6 +317,7 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
                         f"/api/3/<module>/ to a value that is already a full IRI, and the failing "
                         f"call's URL is doubled; use the IRI as-is: likely root cause",
                         [ev] + ([step_ev] if step_ev else []), "high")
+            _add_fix(run, failing_step, template, [ev] + ([step_ev] if step_ev else []))
             break
     for h in raw.get("hints") or []:
         run.finding(str(h), [run_ev], "medium")

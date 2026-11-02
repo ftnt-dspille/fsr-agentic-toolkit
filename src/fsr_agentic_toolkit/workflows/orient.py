@@ -53,13 +53,59 @@ def _connectors(client: Any, goal: str) -> dict[str, Any]:
     return {"connectors": rows, "matches": matches}
 
 
+_CACHE_SECONDS = 120.0
+_cache: dict[tuple, tuple[float, WorkflowResult]] = {}
+
+
+def _box_context(client: Any, run: WorkflowRun) -> None:
+    """Version, FortiAI state and registered MCP servers: the facts an agent
+    otherwise rebuilds over a dozen calls. Each read is best-effort."""
+    box: dict[str, Any] = {}
+    try:
+        box["version"] = str(client.version())
+    except Exception as exc:  # noqa: BLE001
+        run.unknown(f"version could not be read: {exc}")
+    try:
+        box["ai_enabled"] = client.ai.features_enabled()
+        servers = client.ai.list_mcp_servers() or []
+        box["mcp_servers"] = [s.get("name") if isinstance(s, dict) else getattr(s, "name", str(s))
+                              for s in servers]
+    except Exception as exc:  # noqa: BLE001 - FortiAI may not be installed
+        run.unknown(f"FortiAI configuration could not be read: {exc}")
+    if box:
+        ev = run.evidence("op", "box context", ", ".join(f"{k}={v}" for k, v in box.items())[:500])
+        parts = []
+        if "version" in box:
+            parts.append(f"FortiSOAR {box['version']}")
+        if "ai_enabled" in box:
+            parts.append(f"FortiAI {'enabled' if box['ai_enabled'] else 'disabled'}")
+        if box.get("mcp_servers"):
+            parts.append(f"{len(box['mcp_servers'])} registered MCP servers ({', '.join(map(str, box['mcp_servers'][:8]))})")
+        run.finding("; ".join(parts) or "box context read", [ev], "high")
+    run.data["box"] = box
+
+
 def orient(goal: str = "", modules: list[str] | None = None,
-           connectors: bool = True) -> WorkflowResult:
-    run = WorkflowRun("survey_box")
+           connectors: bool = True, fresh: bool = False) -> WorkflowResult:
+    import time
+
     client = _shared._live_client()
+    key = (id(client), goal, tuple(modules or []), connectors)
+    hit = _cache.get(key)
+    if hit and not fresh and time.monotonic() - hit[0] < _CACHE_SECONDS:
+        return hit[1]
+    result = _orient(client, goal, modules, connectors)
+    if result.status != "blocked":
+        _cache[key] = (time.monotonic(), result)
+    return result
+
+
+def _orient(client: Any, goal: str, modules: list[str] | None, connectors: bool) -> WorkflowResult:
+    run = WorkflowRun("survey_box")
     if client is None:
         run.unknown("no FortiSOAR instance is configured")
         return run.result("blocked")
+    _box_context(client, run)
     run.data["modules"] = {}
 
     for module in modules or []:

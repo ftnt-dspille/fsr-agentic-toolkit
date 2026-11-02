@@ -53,7 +53,7 @@ def test_registry_tools_gain_instance_arg_and_meta_tool():
     assert inst["type"] == "string"
     assert inst["enum"] == ["a", "b"]
     # Original required fields are untouched by the injection.
-    assert set(sample.input_schema["required"]) == {"module", "ref"}
+    assert set(sample.input_schema["required"]) == {"ref"}  # module is read from an IRI ref
 
 
 def test_no_registry_means_no_instance_arg():

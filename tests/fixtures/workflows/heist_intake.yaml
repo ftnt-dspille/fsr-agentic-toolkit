@@ -48,6 +48,7 @@ playbooks:
                 "cut_per_member": take // crew,
                 "risk": "high" if take > 1000000 else "low",
             }
+            print(output)
         next: Case The Joint
 
       # 3. Dramatic pause -- case the joint.

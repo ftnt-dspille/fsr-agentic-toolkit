@@ -35,7 +35,19 @@ def repair_playbook(follow_up: str, yaml_text: str) -> WorkflowResult:
         return run.result("blocked")
 
     new_yaml = yaml_text
-    for f in prior.findings:
+    # Structured fixes first: debug_playbook_run states the exact edit.
+    applied = False
+    for fx in (prior.data or {}).get("fixes") or []:
+        if fx.get("kind") != "replace" or not fx.get("old") or fx["old"] not in new_yaml:
+            continue
+        new_yaml = new_yaml.replace(fx["old"], fx["new"])
+        applied = True
+        # Cite the diagnosis's own evidence (reloaded with the follow-up, not redone).
+        cites = [e for e in fx.get("evidence") or [] if e in prior.evidence] or [
+            run.evidence("step", f"{fx.get('step')}:fix", f"{fx['old']} -> {fx['new']}")]
+        run.finding(f"{fx.get('label') or 'Applied the fix'} in step {fx.get('step')!r}: "
+                    f"{fx['old']!r} -> {fx['new']!r} ({fx.get('why', '')})", cites, "high")
+    for f in ([] if applied else prior.findings):
         if "likely root cause" not in f.claim:
             continue
         step_evs = [e for e in f.evidence if prior.evidence[e].kind == "step"
