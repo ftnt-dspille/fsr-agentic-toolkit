@@ -124,3 +124,22 @@ def test_build_server_registers_handlers():
     assert server.name == "fsr-agentic-toolkit"
     # mcp 2.x low-level Server records handlers keyed by MCP method.
     assert {"tools/list", "tools/call"} <= set(server._request_handlers)
+
+
+@pytest.mark.requires_extra("mcp")
+def test_tool_call_runs_off_the_event_loop():
+    """A handler that runs its own event loop (pyfsr's MCP client does asyncio.run)
+    must work when called through the server, whose handler already runs on one."""
+    import asyncio
+    from types import SimpleNamespace
+
+    class LoopClient(FakeClient):
+        def list_modules(self, refresh=False):
+            asyncio.run(asyncio.sleep(0))  # raises if called on a running loop
+            return super().list_modules(refresh)
+
+    server = mcp_mod.build_server(LoopClient())
+    ctx = SimpleNamespace(session=None, request_id=None)
+    params = SimpleNamespace(name="list_modules", arguments={})
+    result = asyncio.run(server._request_handlers["tools/call"].handler(ctx, params))
+    assert "Alerts" in result.content[0].text

@@ -131,7 +131,7 @@ def _diagnose(playbook_or_id: str, yaml_text: str | None) -> dict[str, Any]:
 
 
 def _failure_by_name(playbook_or_id: str) -> dict[str, Any] | None:
-    """Read a playbook's latest run failure straight off the run record, by name.
+    """Read a run's failure straight off the run record, by run id or playbook name.
 
     The library's by-name path renders the playbook's Jinja against the run,
     which means decompiling the live playbook -- and that decompiler lives in the
@@ -141,13 +141,15 @@ def _failure_by_name(playbook_or_id: str) -> dict[str, Any] | None:
     off the run record via the client we already hold, so fall back to that rather
     than surface an import error to the analyst.
     """
-    if not playbook_or_id or playbook_or_id.isdigit():
-        return None  # a run-id input already resolves a run; no name fallback
+    if not playbook_or_id:
+        return None
     client = _shared._live_client()
     if client is None:
         return None
+    # A run id reads that run; a name reads the playbook's latest run.
+    key = {"pk": playbook_or_id} if playbook_or_id.isdigit() else {"playbook": playbook_or_id}
     try:
-        return failure_of(getattr(client, "playbooks", None), playbook=playbook_or_id)
+        return failure_of(getattr(client, "playbooks", None), **key)
     except Exception:  # noqa: BLE001 -- best effort; never raise out of a fallback
         return None
 

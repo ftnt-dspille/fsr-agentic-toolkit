@@ -311,7 +311,10 @@ def build_server(target: Any) -> Server:
             return gate  # an InputRequiredResult: the client asks the user, then retries this call
         if gate is not None:
             return types.CallToolResult(content=_text_content(gate))
-        return types.CallToolResult(content=_route_call(registry, params.name, params.arguments))
+        # Handlers are synchronous and some run their own event loop (pyfsr's MCP client calls
+        # asyncio.run), which fails on this server's loop, so they run in a worker thread.
+        content = await asyncio.to_thread(_route_call, registry, params.name, params.arguments)
+        return types.CallToolResult(content=content)
 
     try:
         return Server(SERVER_NAME, instructions=OPERATING_GUIDE,
