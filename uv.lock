@@ -381,7 +381,7 @@ wheels = [
 
 [[package]]
 name = "fsr-agentic-toolkit"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "fsr-playbooks" },
@@ -402,7 +402,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fsr-playbooks", specifier = ">=0.10.0" },
+    { name = "fsr-playbooks", specifier = ">=0.10.1" },
     { name = "mcp", specifier = ">=2.0,<3" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyfsr", specifier = ">=0.32.0" },
@@ -415,7 +415,7 @@ provides-extras = ["test", "dev"]
 
 [[package]]
 name = "fsr-playbooks"
-version = "0.10.0"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -424,7 +424,7 @@ dependencies = [
     { name = "ruamel-yaml" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/86/0a0d2a5e0014195d4fe6d94c995b459fd21d3a33530fd2d8fe35f8823106/fsr_playbooks-0.10.0-py3-none-any.whl", hash = "sha256:f8408f76d9d90ba63a28fc843634740fc81d9c382d64a4a46842fe27aad417a3", size = 1628367, upload-time = "2026-11-02T19:49:20.505Z" },
+    { url = "https://files.pythonhosted.org/packages/00/42/4f30080f66a66631427c8e0007e2ff0258ba40a34d39e00deaad1c50fb3d/fsr_playbooks-0.10.1-py3-none-any.whl", hash = "sha256:fb721f6dd50c37791f16f3df242c63ab22075ca4653d9c66796a36a6baebd420", size = 1628700, upload-time = "2026-11-02T23:52:13.338Z" },
 ]
 
 [[package]]
