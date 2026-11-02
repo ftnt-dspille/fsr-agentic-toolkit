@@ -4,7 +4,7 @@ from __future__ import annotations
 from fsr_agentic_toolkit import skills_cmd as S
 
 EXPECTED = {"alert-investigation", "box-onboarding", "connector-building", "connector-secrets",
-            "debug-and-repair", "playbook-authoring", "prove-the-work"}
+            "debug-and-repair", "playbook-authoring", "prove-the-work", "use-case-building"}
 
 
 def test_every_skill_ships_with_a_description():

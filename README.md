@@ -111,7 +111,7 @@ fsr-agentic-toolkit mcp        # MCP server on stdio
 
 The toolkit ships skills that teach a coding agent how to use it well: playbook
 authoring, debug and repair, proving the work, connector secrets, alert
-investigation, box onboarding, and connector building.
+investigation, box onboarding, use-case building, and connector building.
 
 ```
 fsr-agentic-toolkit skills                                  # list them
