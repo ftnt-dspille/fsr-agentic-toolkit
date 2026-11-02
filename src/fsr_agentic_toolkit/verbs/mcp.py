@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from typing import TYPE_CHECKING, Any
 
 from pyfsr.client import FortiSOAR
@@ -230,6 +231,14 @@ def _target_label(registry: Any, instance: str | None) -> str:
     return instance or "the configured FortiSOAR box"
 
 
+_CALL_LOCK = threading.Lock()
+
+
+def _route_call_serialized(registry: Any, name: str, arguments: dict[str, Any] | None) -> list[Any]:
+    with _CALL_LOCK:
+        return _route_call(registry, name, arguments)
+
+
 def _route_call(registry: Any, name: str, arguments: dict[str, Any] | None) -> list[Any]:
     """Resolve the ``instance`` argument to a client, then dispatch ``name``.
 
@@ -312,8 +321,10 @@ def build_server(target: Any) -> Server:
         if gate is not None:
             return types.CallToolResult(content=_text_content(gate))
         # Handlers are synchronous and some run their own event loop (pyfsr's MCP client calls
-        # asyncio.run), which fails on this server's loop, so they run in a worker thread.
-        content = await asyncio.to_thread(_route_call, registry, params.name, params.arguments)
+        # asyncio.run), which fails on this server's loop, so they run in a worker thread. The
+        # lock keeps them one at a time, as they were on the loop: workflows bind a process-wide
+        # live client, so two concurrent calls to different instances must not interleave.
+        content = await asyncio.to_thread(_route_call_serialized, registry, params.name, params.arguments)
         return types.CallToolResult(content=content)
 
     try:
