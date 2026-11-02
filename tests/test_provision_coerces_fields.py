@@ -17,6 +17,10 @@ class _Stop(Exception):
 
 
 class _FakeAdmin:
+    def fields_from_specs(self, module, specs):
+        from pyfsr.api.modules_admin import ModulesAdminAPI
+        return [ModulesAdminAPI.field_from_spec(s) for s in specs]
+
     def __init__(self):
         self.created_fields = None
 
@@ -52,11 +56,10 @@ def test_provision_coerces_fields_before_create(monkeypatch):
 
     assert admin.created_fields, "create_module got no fields"
     f = admin.created_fields[0]
-    # A raw passthrough leaves a plain dict with a bare display "type" and a
-    # top-level "required" (dropped at publish). Coercion yields real
-    # AttributeMetadata: storage type, a form type, and required under
-    # validation. Discriminate on that.
-    assert not isinstance(f, dict), f"fields handed to create_module raw: {f}"
-    assert f.name == "hostname"
-    assert f.type == "string" and f.form_type == "text"
-    assert f.validation.required is True, f"required dropped: {f}"
+    # A raw passthrough leaves a bare display "type" and a top-level "required"
+    # (dropped at publish). pyfsr's fields_from_specs yields the storage type, a
+    # formType, and required under validation. Discriminate on that.
+    assert "formType" in f, f"fields handed to create_module raw: {f}"
+    assert f["name"] == "hostname"
+    assert f["type"] == "string" and f["formType"] == "text"
+    assert f["validation"]["required"] is True, f"required dropped: {f}"

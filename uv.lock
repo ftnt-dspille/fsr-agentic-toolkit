@@ -381,13 +381,14 @@ wheels = [
 
 [[package]]
 name = "fsr-agentic-toolkit"
-version = "0.1.11"
+version = "0.1.13"
 source = { editable = "." }
 dependencies = [
     { name = "fsr-playbooks" },
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pyfsr" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -401,19 +402,20 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fsr-playbooks", specifier = ">=0.9.0" },
+    { name = "fsr-playbooks", specifier = ">=0.10.0" },
     { name = "mcp", specifier = ">=2.0,<3" },
     { name = "pydantic", specifier = ">=2" },
-    { name = "pyfsr", specifier = ">=0.31.1" },
+    { name = "pyfsr", specifier = ">=0.32.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.17.2" },
 ]
 provides-extras = ["test", "dev"]
 
 [[package]]
 name = "fsr-playbooks"
-version = "0.9.0"
+version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -422,7 +424,7 @@ dependencies = [
     { name = "ruamel-yaml" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bf/d0/c72467dfc7a023a8f6740a7eaafc111e4c3fcc9fbafde53ca94d33b818a0/fsr_playbooks-0.9.0-py3-none-any.whl", hash = "sha256:169d942f5354f3eb870e383d85ae1e0dd2052e8a0d7c5d89d02cb2561081598f", size = 1614520, upload-time = "2026-10-28T16:07:32.589Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/86/0a0d2a5e0014195d4fe6d94c995b459fd21d3a33530fd2d8fe35f8823106/fsr_playbooks-0.10.0-py3-none-any.whl", hash = "sha256:f8408f76d9d90ba63a28fc843634740fc81d9c382d64a4a46842fe27aad417a3", size = 1628367, upload-time = "2026-11-02T19:49:20.505Z" },
 ]
 
 [[package]]
@@ -885,16 +887,16 @@ wheels = [
 
 [[package]]
 name = "pyfsr"
-version = "0.31.1"
+version = "0.32.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/07/40/1df3c083164cd8eec10a410bb3e2df24f78a60a55d87ff9f362816f745c7/pyfsr-0.31.1.tar.gz", hash = "sha256:46d8ed3766d075dbe5407c2a6e69f7076ca7cf615723eb4e6e644890793f0438", size = 2056725, upload-time = "2026-10-30T16:38:23.782Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/dc/d67945e72df0acfed9fa94ccda52cd873a171550561bfe62fcbc98016e63/pyfsr-0.32.0.tar.gz", hash = "sha256:ddea876db272d24b3c37261112456921c7b367fc1493ddf301d107c3e42e18ff", size = 2086377, upload-time = "2026-11-02T19:40:31.338Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/31/e8/35c5c5f9692f99a372f1a5c44bb32a00b600382d45ad1c7d9e1a6670cd07/pyfsr-0.31.1-py3-none-any.whl", hash = "sha256:3988be5c7a1dbeb45ad39b0065e938b58e0309592e5adfe9249e09489e0c4206", size = 1012545, upload-time = "2026-10-30T16:38:21.964Z" },
+    { url = "https://files.pythonhosted.org/packages/95/e7/82f45129cad249110a36a9edc771d6ada4f0751f2265bc4336ec510ec7c0/pyfsr-0.32.0-py3-none-any.whl", hash = "sha256:b9faea1cf63c1e908941350b6d1677b53647e9095364f31b8e7bd05708f9b659", size = 1026796, upload-time = "2026-11-02T19:40:29.691Z" },
 ]
 
 [[package]]

@@ -8,11 +8,15 @@ from fsr_agentic_toolkit.verbs import tools
 
 
 class FakeRecordSet:
+    from pyfsr.records import RecordSet
+
+    verify_write = RecordSet.verify_write
+
     def __init__(self, module, store):
         self.module = module
         self.store = store
 
-    def get(self, ref):
+    def get(self, ref, **_):
         return {"@id": f"/api/3/{self.module}/{ref}", "uuid": ref, "name": "rec", "junk": 1}
 
     def search(self, term="", limit=30):
@@ -169,6 +173,10 @@ class FakeAudit:
 
 
 class FakeModulesAdmin:
+    def fields_from_specs(self, module, specs):
+        from pyfsr.api.modules_admin import ModulesAdminAPI
+        return [ModulesAdminAPI.field_from_spec(s) for s in specs]
+
     def __init__(self, store):
         self.store = store
 
@@ -362,7 +370,7 @@ def test_dispatch_create_module_grant_to(client):
     # a bare display type passes staging but fails at publish (live-verified).
     field = kwargs["fields"][0]
     assert field["name"] == "alias"
-    assert field["type"] == "string" and field.form_type == "text"
+    assert field["type"] == "string" and field["formType"] == "text"
 
 
 def test_dispatch_create_module_drops_none_defaults(client):
@@ -468,9 +476,9 @@ def test_dispatch_wait_for_playbook_run(client):
 def test_dispatch_record_lifecycle(client):
     out = tools.dispatch(client, "record_lifecycle", {"entity_uuid": "u1"})
     assert "summary" in out
-    assert out["lifecycle"]["entity_uuid"] == "u1"
-    assert len(out["lifecycle"]["entries"]) == 2
-    assert out["lifecycle"]["entries"][0]["operation"] == "Create"
+    assert out["entity_uuid"] == "u1"
+    assert len(out["entries"]) == 2
+    assert out["entries"][0]["operation"] == "Create"
 
 
 def test_dispatch_execution_context(client):
@@ -485,7 +493,7 @@ def test_dispatch_audit_activities(client):
     out = tools.dispatch(client, "audit_activities", {"entity_uuid": "u1", "limit": 10})
     assert out["total"] == 2
     assert out["activities"][0]["operation"] == "Create"
-    assert out["activities"][1]["playbookName"] == "Enrich"
+    assert out["activities"][1]["playbook"] == "Enrich"
 
 
 # -- dispatch: record upsert ------------------------------------------------
@@ -643,3 +651,13 @@ def test_list_modules_surfaces_label_as_name():
     assert mods["c_v_es"]["name"] == "CVE"          # ugly slug -> friendly name surfaced
     assert "name" not in mods["alerts"]             # already clean -> no redundant name
     assert all("plural" not in m for m in out["modules"])  # plural dropped (echoes type)
+
+
+def test_a_history_event_shows_changes_as_old_and_new():
+    from fsr_agentic_toolkit.verbs.tools import _slim_event
+
+    raw = {"operation": "Update", "user": "CS Admin", "transactionDate": 1793570955641, "id": 7,
+           "data": {"Status": {"oldData": "Open", "newData": "Investigating"}},
+           "teamIris": ["x"], "entityUuid": "u1", "title": "Attribute(s) [Status] Updated"}
+    assert _slim_event(raw) == {"time": "2026-11-01T22:09:15Z", "operation": "Update", "user": "CS Admin",
+                                "changes": {"Status": ["Open", "Investigating"]}, "audit_id": 7}

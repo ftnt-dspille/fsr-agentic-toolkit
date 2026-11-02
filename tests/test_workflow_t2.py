@@ -89,6 +89,10 @@ class FakeBox:
         return _Resp(200, {"hydra:member": []})
 
     class _Admin:
+        def fields_from_specs(self, module, specs):
+            from pyfsr.api.modules_admin import ModulesAdminAPI
+            return [ModulesAdminAPI.field_from_spec(s) for s in specs]
+
         def __init__(self, box):
             self.box = box
 
@@ -167,20 +171,6 @@ def test_provision_creates_publishes_grants_and_proves_access(box):
         assert part in claims
     assert box.published_calls == 1 and box.roles.grants == [("Full App Permissions", "heists")]
 
-
-def test_provision_waits_out_a_publish_in_flight_and_reports_it(box, monkeypatch):
-    """Live: the box answered with 503 progress states and they came back as
-    errors. provision_module waits them out and reports them as progress."""
-    from fsr_agentic_toolkit.workflows import provision as P
-    monkeypatch.setattr(P, "IDLE_INTERVAL", 0)
-    box.busy = ["Generating Models", "Generating Models", "Clearing Cache",
-                "Cleaning Up Old Backups", "Encrypt Database"]
-    r = provision_module("heists", label="Heist", fields=HEIST_FIELDS)
-    assert r.status == "answered", r.findings
-    waited = [f.claim for f in r.findings if f.claim.startswith("waited out")]
-    assert waited == [("waited out a publish already in progress: Generating Models -> "
-                      "Clearing Cache -> Cleaning Up Old Backups -> Encrypt Database")]
-    assert box.published_calls == 1
 
 
 def test_provision_refuses_to_publish_other_peoples_staged_changes(box):

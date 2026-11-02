@@ -84,19 +84,6 @@ def _find_playbooks(root: Path) -> list[Path]:
     return out
 
 
-def _picklist_name(attr: dict[str, Any]) -> str | None:
-    """Resolve a picklist field's list name from its ``dataSource.query.filters``.
-
-    A picklist attribute carries ``dataSource.model == "picklists"`` and a filter on
-    ``listName__name`` whose ``value`` is the list name (e.g. ``"IncidentStatus"``).
-    """
-    ds = attr.get("dataSource") or {}
-    for f in (ds.get("query") or {}).get("filters") or []:
-        if f.get("field") == "listName__name" and f.get("value"):
-            return str(f["value"])
-    return None
-
-
 def _field_from_attr(module: str, attr: dict[str, Any]) -> ModuleField:
     type_ = attr.get("type", "")
     ds = attr.get("dataSource") or {}
@@ -104,7 +91,9 @@ def _field_from_attr(module: str, attr: dict[str, Any]) -> ModuleField:
     picklist: str | None = None
     relationship: str | None = None
     if type_ == "picklists":
-        picklist = _picklist_name(attr)
+        from pyfsr.models import AttributeMetadata
+
+        picklist = AttributeMetadata.model_validate(attr).picklist_name
     elif model and model != "picklists":
         relationship = model
     return ModuleField(

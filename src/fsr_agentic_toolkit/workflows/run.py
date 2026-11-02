@@ -20,10 +20,10 @@ from .debug import debug_run
 from .result import WorkflowResult, WorkflowRun
 
 
-def _gate(run: WorkflowRun, yaml_text: str) -> tuple[dict[str, Any], bool]:
+def _gate(run: WorkflowRun, yaml_text: str, client: Any = None) -> tuple[dict[str, Any], bool]:
     from ..verbs.tools import _h_compile_playbook_yaml
 
-    out = _h_compile_playbook_yaml(None, yaml_text=yaml_text)
+    out = _h_compile_playbook_yaml(client, yaml_text=yaml_text)
     errors = [e for e in (out.get("errors") or []) if (e.get("severity") or "error") != "warning"]
     warnings = [e for e in (out.get("errors") or []) if e.get("severity") == "warning"]
     fixes = out.get("required_fixes") or []
@@ -182,8 +182,9 @@ def run_playbook_yaml(yaml_text: str, *, playbook: str = "", inputs: dict | None
                  answers: dict | None = None, timeout: float = 120,
                  overwrite_changed: bool = False, cleanup: bool = False) -> WorkflowResult:
     run = WorkflowRun("run_playbook_yaml")
+    client = _shared._live_client()
 
-    gate, ok = _gate(run, yaml_text)
+    gate, ok = _gate(run, yaml_text, client)
     names = list(gate.get("playbooks") or [])
     run.data["collection"] = gate.get("collection")
     run.data["playbooks"] = names
@@ -206,7 +207,6 @@ def run_playbook_yaml(yaml_text: str, *, playbook: str = "", inputs: dict | None
         run.unknown(f"{target!r} declares no trigger step, so a manual 'Start' step was added "
                     "automatically. Add `type: start` (manual), `start_on_create` or `api_endpoint` "
                     "yourself if it should fire any other way")
-    client = _shared._live_client()
     from ..verbs.tools import _h_publish_playbook
 
     try:

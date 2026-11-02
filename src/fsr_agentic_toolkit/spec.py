@@ -95,11 +95,18 @@ class ToolSpec:
         return 3 if self.destructive else 2 if self.mutating else 1
 
     def rendered_schema(self) -> dict[str, Any]:
-        """The input schema as an agent should see it (``confirm`` injected)."""
-        if not self.destructive:
-            return self.input_schema
+        """The input schema as an agent should see it (``confirm``/``offset`` injected)."""
         schema = dict(self.input_schema)
         props = dict(schema.get("properties") or {})
+        if not self.mutating and "offset" not in props:
+            props["offset"] = {
+                "type": "integer", "minimum": 0,
+                "description": "Skip this many items of a list result. Use the next_offset a "
+                "truncated result gives to read the rest.",
+            }
+        schema["properties"] = props
+        if not self.destructive:
+            return schema
         props["confirm"] = {
             "type": "boolean",
             "description": "This operation is high-impact (destructive or privileged) and never "

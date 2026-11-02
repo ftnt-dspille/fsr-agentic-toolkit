@@ -80,17 +80,19 @@ def test_verify_degrades_to_the_api_key_actor(monkeypatch, capsys):
     """Under an API key, whoami is JWT-only; init identifies the key by its
     ApiKey actor instead of failing verification."""
     import pyfsr.client as pc
+    from pyfsr.api.users import UsersAPI
     from pyfsr.exceptions import UnsupportedAuthOperationError
 
-    class _Users:
+    class _Users(UsersAPI):
+        def __init__(self, client):
+            self.client = client
+
         def whoami(self):
             raise UnsupportedAuthOperationError("auth", "APIKeyAuth")
 
     class _FakeClient:
-        users = _Users()
-
         def __init__(self, *a, **k):
-            pass
+            self.users = _Users(self)
 
         def get(self, path):
             assert path == "/api/3/actors/current"

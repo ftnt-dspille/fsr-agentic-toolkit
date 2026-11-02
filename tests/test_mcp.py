@@ -68,7 +68,9 @@ def test_call_dispatches_new_admin_tool_as_text_json():
             return {"server": "", "verify_ssl": True}
 
     class FakeModulesAdmin:
-        pass
+        def fields_from_specs(self, module, specs):
+            from pyfsr.api.modules_admin import ModulesAdminAPI
+            return [ModulesAdminAPI.field_from_spec(s) for s in specs]
 
     class Client:
         def __init__(self):

@@ -118,12 +118,10 @@ def _verify(args: argparse.Namespace) -> dict | None:
     """whoami against the box; None (with a printed error) when unreachable.
 
     Under an API key, ``whoami`` is JWT-only (the DAS /api/auth login lookup
-    rejects API keys). Rather than fail verification, identify the key by its
-    ``ApiKey`` actor via ``/api/3/actors/current``, which answers in both auth
-    modes -- the same degrade the whoami tool uses.
+    rejects API keys); pyfsr's ``users.identify()`` falls back to the key's
+    ``ApiKey`` actor there.
     """
     from pyfsr.client import FortiSOAR
-    from pyfsr.exceptions import UnsupportedAuthOperationError
 
     use_user = bool(getattr(args, "username", None) and getattr(args, "password", None))
     try:
@@ -143,16 +141,7 @@ def _verify(args: argparse.Namespace) -> dict | None:
                 suppress_insecure_warnings=args.no_verify_ssl,
             )
         )
-        try:
-            return client.users.whoami()
-        except UnsupportedAuthOperationError:
-            actor = client.get("/api/3/actors/current")
-            return {
-                "loginid": None,
-                "email": None,
-                "name": actor.get("name"),
-                "principal_type": actor.get("@type") or actor.get("userType"),
-            }
+        return client.users.identify()
     except Exception as exc:  # noqa: BLE001 - report, don't trace
         print(f"error: could not verify the connection: {exc}", file=sys.stderr)
         return None

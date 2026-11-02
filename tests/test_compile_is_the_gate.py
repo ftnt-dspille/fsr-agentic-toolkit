@@ -23,7 +23,7 @@ class _Bad:
 
 
 def test_runtime_reference_defect_fails_the_gate(monkeypatch):
-    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y: _Ok())
+    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y, _c=None: _Ok())
     monkeypatch.setattr(tools, "_grounded_required_fixes",
                         lambda _y: [{"code": "missing_field_on_step_output",
                                      "message": "Get_Macros produces a LIST; .data.value is empty"}])
@@ -34,7 +34,7 @@ def test_runtime_reference_defect_fails_the_gate(monkeypatch):
 
 
 def test_clean_structure_and_grounded_is_safe_to_publish(monkeypatch):
-    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y: _Ok())
+    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y, _c=None: _Ok())
     monkeypatch.setattr(tools, "_grounded_required_fixes", lambda _y: [])
     out = tools._h_compile_playbook_yaml(None, yaml_text="x")
     assert out["ok"] is True and out["playbooks"] == ["P"]
@@ -42,7 +42,7 @@ def test_clean_structure_and_grounded_is_safe_to_publish(monkeypatch):
 
 
 def test_structure_error_returns_before_the_grounded_check(monkeypatch):
-    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y: _Bad())
+    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y, _c=None: _Bad())
     called = {"n": 0}
     monkeypatch.setattr(tools, "_grounded_required_fixes",
                         lambda _y: called.__setitem__("n", called["n"] + 1))
@@ -51,7 +51,7 @@ def test_structure_error_returns_before_the_grounded_check(monkeypatch):
 
 
 def test_gate_unavailable_is_reported_not_claimed_clean(monkeypatch):
-    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y: _Ok())
+    monkeypatch.setattr(tools, "_compile_playbook_yaml", lambda _y, _c=None: _Ok())
     monkeypatch.setattr(tools, "_grounded_required_fixes", lambda _y: None)
     out = tools._h_compile_playbook_yaml(None, yaml_text="x")
     assert out["ok"] is True

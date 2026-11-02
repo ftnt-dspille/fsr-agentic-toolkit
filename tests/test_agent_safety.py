@@ -16,6 +16,9 @@ class _FakeUsers:
     def whoami(self):
         return {"loginid": "analyst", "email": "analyst@example.com"}
 
+    def identify(self):
+        return {**self.whoami(), "auth_mode": "jwt"}
+
     def get_or_create(self, loginid, password, firstname, lastname, email, roles, **kwargs):
         self.created = {"loginid": loginid, "password": password, "email": email, "roles": roles, "kwargs": kwargs}
         return ({"email": email, "loginid": loginid}, True)
@@ -51,7 +54,7 @@ class _FakeConnectors:
         self.installed.append(("hub", name, version))
         return {"name": name, "status": "finished"}
 
-    def install_from_file(self, path, *, replace=False, wait=True, timeout=300.0):
+    def install_from_file(self, path, *, replace=False, wait=True, timeout=300.0, on_existing_version="bump_patch"):
         self.installed.append(("file", path, replace))
         return {"name": "custom-conn", "status": "finished"}
 

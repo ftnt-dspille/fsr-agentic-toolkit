@@ -31,11 +31,10 @@ message and self-correct.
 
 from __future__ import annotations
 
-import contextlib
 import json
+import logging
 import os
 import re
-from datetime import UTC
 from typing import Any
 
 from pyfsr.exceptions import (
@@ -164,19 +163,6 @@ def _text_fields(client, module) -> list[str]:
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
-def _picklist_fields(client, module) -> set[str]:
-    """The module's picklist field names, so the terse-predicate parser can lower
-    a bare ``status=Open`` to ``status.itemValue=Open``. Empty on a schema miss
-    (the predicate still compiles; it just won't add ``.itemValue`` for you)."""
-    try:
-        desc = client.describe_module(module)
-    except Exception:  # noqa: BLE001 - no schema means no .itemValue rewriting, not a failure
-        return set()
-    return {f["name"] for f in (desc.get("fields") or [])
-            if str(f.get("type") or "").lower() == "picklists"
-            or str(f.get("form_type") or "").lower() == "picklist"}
-
-
 def _h_search_records(client, *, module, term="", limit=30, fields=None, summary=True) -> Any:
     page = client.records(module).search(term, limit=limit)
     out = project(page, fields=fields, summary=summary)
@@ -202,7 +188,7 @@ def _h_search_records(client, *, module, term="", limit=30, fields=None, summary
 def _h_query_records(
     client, *, module, filters=None, logic="AND", sort=None, limit=30, fields=None, summary=True
 ) -> Any:
-    _check_filters(client, module, filters or [], logic)
+    # pyfsr's records().query refuses filters the box would widen or 500 on.
     body: dict[str, Any] = {"logic": logic, "filters": filters or []}
     if sort:
         body["sort"] = sort
@@ -212,59 +198,14 @@ def _h_query_records(
     return project(page, fields=fields, summary=summary)
 
 
-def _module_field_names(client, module) -> set[str]:
-    try:
-        desc = client.describe_module(module)
-    except Exception:  # noqa: BLE001 - no schema means the field check is skipped
-        return set()
-    return {f["name"] for f in (desc.get("fields") or []) if isinstance(f, dict) and f.get("name")}
-
-
-def _check_filters(client, module, filters, logic) -> None:
-    """Refuse a query FortiSOAR would silently widen.
-
-    The query API drops a filter it cannot read (no field, an unknown field, a
-    bad logic) and returns every record instead of an error, so a typo reads as
-    "all of these match". Checked here so the agent gets the mistake, not rows.
-    """
-    if str(logic).upper() not in ("AND", "OR"):
-        raise ValueError(f"logic must be AND or OR, not {logic!r}")
-    if not isinstance(filters, list):
-        raise ValueError("filters must be a list of {field, operator, value} objects")  # noqa: TRY004
-    known = _module_field_names(client, module)
-    for f in filters:
-        if not isinstance(f, dict):
-            raise ValueError(f"each filter must be an object, got {f!r}")  # noqa: TRY004
-        if "filters" in f:  # a nested group
-            _check_filters(client, module, f["filters"], f.get("logic", "AND"))
-            continue
-        if not f.get("field") or not f.get("operator"):
-            raise ValueError(f"filter {f!r} needs both 'field' and 'operator'")
-        root = str(f["field"]).split(".", 1)[0]
-        if known and root not in known:
-            import difflib
-
-            close = difflib.get_close_matches(root, sorted(known), n=5, cutoff=0.6)
-            raise ValueError(
-                f"{module} has no field {root!r}"
-                + (f"; did you mean one of {close}?" if close else "; describe_module lists the fields")
-            )
-
-
 def _h_find_records(client, *, module, where="", sort=None, limit=30, fields=None, summary=True) -> Any:
     """Query a module with a terse predicate instead of filter JSON.
 
-    ``where`` is lowered to the query body by :mod:`._predicate` (it owns the
-    ``like`` wildcard and picklist ``.itemValue`` quirks), so the agent never
-    writes operator JSON or knows the Hydra schema. Empty ``where`` lists the
-    module.
+    pyfsr's ``where_body`` lowers ``where`` (it owns the ``like`` wildcard and
+    picklist ``.itemValue`` quirks), so the agent never writes operator JSON or
+    knows the Hydra schema. Empty ``where`` lists the module.
     """
-    from .._predicate import parse_predicate, parse_sort
-
-    filters, logic = parse_predicate(where, _picklist_fields(client, module))
-    body: dict[str, Any] = {"logic": logic, "filters": filters}
-    if sort:
-        body["sort"] = parse_sort(sort) if isinstance(sort, str) else sort
+    body = client.records(module).where_body(where, sort=sort)
     if limit:
         body["limit"] = limit
     return project(client.records(module).query(body), fields=fields, summary=summary)
@@ -285,15 +226,12 @@ def _h_bulk_update_records(
     Rows are matched by ``match`` and written through pyfsr ``bulk_upsert``; a row
     without the match value is refused rather than silently CREATED.
     """
-    from .._predicate import parse_predicate
-
     if records is not None and (where or set):
         raise ValueError("pass either records=[...] OR where=<predicate> + set={...}, not both")
     if records is None:
         if not where or not set:
             raise ValueError("provide records=[...], or both where=<predicate> and set={...}")
-        filters, logic = parse_predicate(where, _picklist_fields(client, module))
-        page = client.records(module).query({"logic": logic, "filters": filters, "limit": limit})
+        page = client.records(module).query({**client.records(module).where_body(where), "limit": limit})
         members = page.get("hydra:member") if isinstance(page, dict) else getattr(page, "members", page)
         rows = []
         for rec in (members or []):
@@ -353,72 +291,17 @@ def _h_bulk_update_records(
     return out
 
 
-_DATE_TYPES = {"datetime", "date"}
+def _prepare_write(client, module, data) -> tuple[Any, list[str]]:
+    """pyfsr's value checks, run up front so the read-back compares converted values.
 
-
-def _coerce_dates(client, module, data) -> tuple[Any, list[str]]:
-    """ISO date strings -> the epoch seconds FortiSOAR date fields store.
-
-    The API rejects an ISO string on a date field with a misleading type error,
-    so convert the ones whose schema says date. Returns (data, converted names).
+    pyfsr fixes values the box would corrupt (ISO dates, epoch millis, "yes" on a
+    checkbox) and refuses the rest with a ValidationError naming each field.
     """
-    if not isinstance(data, dict):
+    records = client.records(module)
+    prepare = getattr(records, "prepare_values", None)
+    if prepare is None or not isinstance(data, dict):
         return data, []
-    try:
-        desc = client.describe_module(module)
-    except Exception:  # noqa: BLE001 - no schema, send the data as given
-        return data, []
-    dates = {f["name"] for f in (desc.get("fields") or []) if isinstance(f, dict)
-             and str(f.get("type") or "").lower() in _DATE_TYPES}
-    from datetime import datetime
-
-    out, converted = dict(data), []
-    for k, v in data.items():
-        if k in dates and isinstance(v, str) and not v.strip().lstrip("-").isdigit():
-            try:
-                dt = datetime.fromisoformat(v.strip())
-            except ValueError:
-                continue
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            out[k] = int(dt.timestamp())
-            converted.append(k)
-    return out, converted
-
-
-def _norm(v: Any) -> Any:
-    if isinstance(v, dict):
-        return v.get("@id") or v.get("itemValue") or v.get("uuid") or json.dumps(v, sort_keys=True)
-    if isinstance(v, list):
-        return sorted(str(_norm(x)) for x in v)
-    return v
-
-
-def _readback(client, module, rec_json, data) -> dict[str, Any]:
-    """Read the record back and compare the written fields to what is stored.
-
-    A write that answers 200 can still drop a field (an unknown name, a value the
-    module coerced away). The comparison is against the record as stored now.
-    """
-    ref = rec_json.get("@id") or rec_json.get("uuid")
-    if not ref:
-        return {"verified": None, "note": "the write returned no id to read back"}
-    try:
-        fresh = to_jsonable(client.records(module).get(ref))
-    except Exception as exc:  # noqa: BLE001 - say what could not be checked
-        return {"verified": None, "note": f"read-back failed: {exc}"}
-    if not isinstance(fresh, dict):
-        return {"verified": None, "note": "read-back returned no record"}
-    mismatches: dict[str, Any] = {}
-    for k in data:
-        if k not in fresh:
-            mismatches[k] = {"stored": "<absent: not a field of this module?>"}
-        elif k in rec_json and _norm(fresh[k]) != _norm(rec_json[k]):
-            mismatches[k] = {"returned": rec_json[k], "stored": fresh[k]}
-    out: dict[str, Any] = {"verified": not mismatches}
-    if mismatches:
-        out["mismatches"] = mismatches
-    return out
+    return prepare(data), list(getattr(records, "last_conversions", []))
 
 
 def _write_result(rec, data, client=None, module=None, converted=None) -> Any:
@@ -436,20 +319,22 @@ def _write_result(rec, data, client=None, module=None, converted=None) -> Any:
         if isinstance(rec_json, dict):
             out["written"] = {k: rec_json.get(k, "<not echoed>") for k in data}
             if client is not None and module:
-                out["readback"] = _readback(client, module, rec_json, data)
+                ref = rec_json.get("@id") or rec_json.get("uuid")
+                out["readback"] = (client.records(module).verify_write(ref, data, rec_json) if ref else
+                                   {"verified": None, "note": "the write returned no id to read back"})
         if converted:
-            out["converted_dates"] = converted
+            out["converted"] = converted
     return out
 
 
 def _h_create_record(client, *, module, data, resolve_picklists=True, strict_picklists=True) -> Any:
-    data, converted = _coerce_dates(client, module, data)
+    data, converted = _prepare_write(client, module, data)
     rec = client.records(module).create(data, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists)
     return _write_result(rec, data, client, module, converted)
 
 
 def _h_update_record(client, *, module, ref, data, resolve_picklists=True, strict_picklists=True) -> Any:
-    data, converted = _coerce_dates(client, module, data)
+    data, converted = _prepare_write(client, module, data)
     rec = client.records(module).update(
         ref, data, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
     )
@@ -468,10 +353,7 @@ def _h_count_records(client, *, module, where="") -> Any:
     criticals" is a cheap decision input, not a full query that risks the output
     cap. Empty ``where`` counts the whole module.
     """
-    from .._predicate import parse_predicate
-
-    filters, logic = parse_predicate(where, _picklist_fields(client, module))
-    body = {"logic": logic, "filters": filters} if filters else None
+    body = client.records(module).where_body(where) if where else None
     return {"module": module, "where": where or None, "count": client.records(module).count(body)}
 
 
@@ -646,33 +528,29 @@ def _h_get_playbook_run(client, *, run_pk) -> Any:
     return to_jsonable(client.playbooks.get_execution(run_pk))
 
 
-_AI_TERMINAL = ("completed", "failed")
+def _investigation_out(task_id, status, result=None, *, waited=None, timeout=None) -> dict[str, Any]:
+    from pyfsr.api.ai import TERMINAL_STATUSES
 
-
-def _investigation_out(client, task_id, status, *, waited=None, timeout=None) -> dict[str, Any]:
     out: dict[str, Any] = {"investigation_task_id": task_id, "status": status}
-    if status in _AI_TERMINAL:
-        out["result"] = to_jsonable(client.ai.get_result(task_id))
+    if status in TERMINAL_STATUSES:
+        out["result"] = to_jsonable(result)
     else:
         out["finished"] = False
         out["next"] = (f"get_investigation_result(task_id='{task_id}', wait=true): the "
                        "investigation is still running; do not compare or conclude on a partial run")
+        if timeout is not None:
+            out["timed_out"] = True
     if waited is not None:
         out["waited_seconds"] = round(waited)
-        if status not in _AI_TERMINAL and timeout is not None:
-            out["timed_out"] = True
     return out
 
 
-def _wait_investigation(client, task_id, timeout) -> tuple[str, float]:
+def _waited_result(client, task_id, timeout) -> dict[str, Any]:
     import time
 
     start = time.monotonic()
-    status = client.ai.get_status(task_id)
-    while status not in _AI_TERMINAL and time.monotonic() - start < float(timeout):
-        time.sleep(5)
-        status = client.ai.get_status(task_id)
-    return status, time.monotonic() - start
+    result = client.ai.wait_for_result(task_id, timeout=float(timeout))
+    return _investigation_out(task_id, result.status, result, waited=time.monotonic() - start, timeout=timeout)
 
 
 def _h_run_fortiai_investigation(client, *, ref, wait=False, timeout=600) -> Any:
@@ -681,16 +559,17 @@ def _h_run_fortiai_investigation(client, *, ref, wait=False, timeout=600) -> Any
     if not task_id:
         raise RuntimeError("FortiAI accepted the request but returned no task id; is AI Investigation configured?")
     if not wait:
-        return _investigation_out(client, task_id, started.status or "pending")
-    status, waited = _wait_investigation(client, task_id, timeout)
-    return _investigation_out(client, task_id, status, waited=waited, timeout=timeout)
+        return _investigation_out(task_id, started.status or "pending")
+    return _waited_result(client, task_id, timeout)
 
 
 def _h_get_investigation_result(client, *, task_id, wait=False, timeout=600) -> Any:
     if wait:
-        status, waited = _wait_investigation(client, task_id, timeout)
-        return _investigation_out(client, task_id, status, waited=waited, timeout=timeout)
-    return _investigation_out(client, task_id, client.ai.get_status(task_id))
+        return _waited_result(client, task_id, timeout)
+    status = client.ai.get_status(task_id)
+    from pyfsr.api.ai import TERMINAL_STATUSES
+
+    return _investigation_out(task_id, status, client.ai.get_result(task_id) if status in TERMINAL_STATUSES else None)
 
 
 def _h_list_ai_config(client) -> Any:
@@ -739,20 +618,9 @@ def _h_whoami(client) -> Any:
     ``system.version()``.
     """
     out: dict[str, Any] = {"base_url": getattr(client, "base_url", None)}
-    try:
-        out["user"] = client.users.whoami()
-        out["auth_mode"] = "jwt"
-    except UnsupportedAuthOperationError:
-        actor = client.get("/api/3/actors/current")
-        out["auth_mode"] = "api_key"
-        out["user"] = {
-            "principal_type": actor.get("@type") or actor.get("userType"),
-            "name": actor.get("name"),
-            "person_uuid": actor.get("uuid"),
-            "user_id": actor.get("userId"),
-            "loginid": None,
-            "note": "API-key principal: no login or person record; identified by the key actor.",
-        }
+    user = client.users.identify()
+    out["auth_mode"] = user.pop("auth_mode", None)
+    out["user"] = user
     try:
         out["version"] = client.version()
     except Exception as exc:  # noqa: BLE001 - version is best-effort garnish
@@ -760,24 +628,12 @@ def _h_whoami(client) -> Any:
     return out
 
 
-def _generate_password(length: int = 20) -> str:
-    """A password that meets FortiSOAR's policy: upper, lower, digit and symbol."""
-    import secrets
-    import string
-
-    symbols = "!@#$%^&*-_=+"
-    pools = (string.ascii_uppercase, string.ascii_lowercase, string.digits, symbols)
-    chars = [secrets.choice(pool) for pool in pools]
-    alphabet = "".join(pools)
-    chars += [secrets.choice(alphabet) for _ in range(length - len(chars))]
-    secrets.SystemRandom().shuffle(chars)
-    return "".join(chars)
-
-
 def _h_create_user(client, *, loginid, firstname, lastname, email, roles, password=None, options=None) -> Any:
     generated = not password
     if generated:
-        password = _generate_password()
+        from pyfsr.api.users import generate_password
+
+        password = generate_password()
     user, created = client.users.get_or_create(loginid, password, firstname, lastname, email, roles, **(options or {}))
     out: dict[str, Any] = {"user": to_jsonable(user), "created": bool(created)}
     if generated and created:
@@ -813,79 +669,23 @@ def _h_list_connector_operations(client, *, connector, version=None) -> Any:
     return {"connector": connector, "operations": slim, "count": len(slim)}
 
 
-def _bundle_identity(path) -> tuple[str | None, str | None]:
-    """(name, version) from a connector .tgz's info.json, or (None, None)."""
-    import tarfile
-
-    try:
-        with tarfile.open(path, "r:*") as tar:
-            for m in tar.getmembers():
-                if m.isfile() and m.name.count("/") <= 1 and m.name.endswith("info.json"):
-                    info = json.loads(tar.extractfile(m).read())  # type: ignore[union-attr]
-                    return info.get("name"), str(info.get("version") or "") or None
-    except (OSError, tarfile.TarError, ValueError):
-        pass
-    return None, None
-
-
-_STALE_WORKER_SECONDS = 180
-
-
-def _settled_version(client, name, want, *, timeout=60.0) -> str | None:
-    """Poll until the box reports ``want`` installed (or timeout); the version seen."""
-    import time
-
-    deadline = time.monotonic() + timeout
-    seen = None
-    while True:
-        with contextlib.suppress(Exception):
-            client.connectors.clear_cache()
-        with contextlib.suppress(Exception):
-            seen = client.connectors.resolve_version(name)
-        if seen == want or time.monotonic() >= deadline:
-            return seen
-        time.sleep(5)
-
-
 def _h_install_connector(client, *, name=None, path=None, version=None, replace=False, wait=True,
-                         timeout=300.0, allow_same_version=False) -> Any:
-    warnings: list[str] = []
-    bundle_name = bundle_version = None
+                         timeout=300.0, on_existing_version="bump_patch") -> Any:
     if path:
-        bundle_name, bundle_version = _bundle_identity(path)
-        installed = None
-        if bundle_name:
-            with contextlib.suppress(Exception):
-                installed = client.connectors.resolve_version(bundle_name)
-        if installed and bundle_version and installed == bundle_version:
-            if not allow_same_version:
-                raise ValueError(
-                    f"{bundle_name} {bundle_version} is already installed. Reinstalling the same version "
-                    f"leaves the box's workers running the OLD code for minutes. Bump the version in "
-                    f"info.json and rebuild, or pass allow_same_version=true and expect stale results "
-                    f"for about {_STALE_WORKER_SECONDS}s."
-                )
-            replace = True
-            warnings.append(f"same-version reinstall: workers may run the previous code for about "
-                            f"{_STALE_WORKER_SECONDS}s; re-run operations after that before judging the change")
-        result = client.connectors.install_from_file(path, replace=replace, wait=wait, timeout=timeout)
+        result = client.connectors.install_from_file(
+            path, replace=replace, wait=wait, timeout=timeout, on_existing_version=on_existing_version)
     elif name:
         result = client.connectors.install(name, version=version, wait=wait, timeout=timeout)
     else:
         raise ValueError("install_connector requires 'name' (Content Hub) or 'path' (local .tgz)")
     out: dict[str, Any] = {"install": to_jsonable(result)}
-    probe = name or bundle_name
-    if probe is None and isinstance(result, dict):
-        probe = result.get("name")
-    want = bundle_version or version
-    if probe and want and wait:
-        seen = _settled_version(client, probe, want)
-        out["installed_version"] = seen
-        if seen != want:
-            warnings.append(f"the box still reports {probe} {seen}, not {want}; wait and check list_connectors")
-    if warnings:
-        out["warnings"] = warnings
-        out["retry_after_seconds"] = _STALE_WORKER_SECONDS
+    probe = name or (result.get("name") if isinstance(result, dict) else None)
+    if isinstance(result, dict) and result.get("bumped"):
+        out["installed_version"] = result["bumped"]
+        out["note"] = (f"that version was already installed, so it went up as {result['bumped']}; "
+                       f"run operations with version={result['bumped']!r} or the default config")
+    if probe and on_existing_version == "allow" and path:
+        out["republish"] = to_jsonable(client.connectors.republish(probe))
     if probe:
         try:
             out["healthcheck"] = to_jsonable(client.connectors.healthcheck(probe))
@@ -910,35 +710,7 @@ def _h_validate_connector(client, *, directory: str) -> Any:
         row = {"code": i.code, "message": i.message,
                "file": Path(i.file).name if i.file else None}
         out["errors" if i.severity == Severity.ERROR else "warnings"].append(row)
-    out["warnings"].extend(_config_field_warnings(Path(directory)))
     out["clean"] = not out["errors"]
-    return out
-
-
-def _config_field_warnings(directory) -> list[dict[str, Any]]:
-    """Configuration fields the code never reads, and HTTP code with nowhere to point.
-
-    An agent editing a scaffold tends to drop or orphan the server field; the
-    connector still validates and then calls a hard-coded host forever.
-    """
-    try:
-        info = json.loads((directory / "info.json").read_text())
-    except (OSError, ValueError):
-        return []
-    fields = [f.get("name") for f in ((info.get("configuration") or {}).get("fields") or [])
-              if isinstance(f, dict) and f.get("name")]
-    code = "\n".join(p.read_text(errors="ignore") for p in directory.glob("*.py"))
-    out = []
-    for name in fields:
-        if f"'{name}'" not in code and f'"{name}"' not in code:
-            out.append({"code": "config-field-unused", "file": "info.json",
-                        "message": f"configuration field {name!r} is never read by the code; "
-                                   "use it (config.get('" + name + "')) or remove it"})
-    uses_http = re.search(r"\b(requests|httpx|urllib)\b", code)
-    if uses_http and not any(re.search(r"url|server|host|endpoint", n, re.IGNORECASE) for n in fields):
-        out.append({"code": "config-no-server", "file": "info.json",
-                    "message": "the code makes HTTP calls but no configuration field holds the "
-                               "server/URL, so the host is hard-coded; keep a server field and read it"})
     return out
 
 
@@ -1004,14 +776,27 @@ def _playbooks_compiler():
     return _compile
 
 
-def _compile_playbook_yaml(yaml_text: str):
-    """Compile playbook YAML against the packaged reference catalog."""
+def _compile_playbook_yaml(yaml_text: str, client: Any = None):
+    """Compile playbook YAML against the target box's reference catalog.
+
+    ``FSRPB_DB`` wins when set. Otherwise the box's own catalog, warmed and kept
+    fresh by fsr_playbooks (the packaged one is another box's: picklist and
+    connector-config lookups can mis-resolve, and every compile warns). The
+    packaged catalog is the fallback when no box is reachable.
+    """
     from pathlib import Path
 
     compile_yaml = _playbooks_compiler()
     db_path = os.environ.get("FSRPB_DB")
     if db_path:
         return compile_yaml(yaml_text, Path(db_path))
+    if client is not None and getattr(client, "base_url", None):
+        try:
+            from fsr_playbooks.warmup import box_catalog  # type: ignore[import-not-found]
+
+            return compile_yaml(yaml_text, box_catalog(client))
+        except Exception as exc:  # noqa: BLE001 - fall back to the packaged catalog, and say so
+            logging.getLogger(__name__).warning("box catalog unavailable (%s); using the packaged one", exc)
     from fsr_playbooks._db import default_db_path  # type: ignore[import-not-found]
 
     return compile_yaml(yaml_text, default_db_path())
@@ -1082,7 +867,7 @@ def _h_compile_playbook_yaml(client, *, yaml_text) -> Any:
     # Offline gate: compile (structure) THEN the grounded checks (run-time
     # reference resolvability, effects). One gate, so any path that reaches here
     # lands on the same answer -- the agent never has to know a second tool name.
-    result = _compile_playbook_yaml(yaml_text)
+    result = _compile_playbook_yaml(yaml_text, client)
     out: dict[str, Any] = {"ok": bool(result.ok), "errors": _compile_errors(result)}
     if not result.ok:
         return out  # uncompilable YAML cannot be gated further; fix structure first
@@ -1103,14 +888,6 @@ def _h_compile_playbook_yaml(client, *, yaml_text) -> Any:
                        "and render empty at run time. Fix them before publish_playbook.")
     else:
         out["note"] = "Compiled and grounded checks clean. Safe to publish_playbook."
-    from ..workflows.yaml_lint import lint_yaml
-
-    traps = lint_yaml(yaml_text)
-    if traps:
-        out["ok"] = False
-        out["runtime_traps"] = traps
-        out["note"] = (f"Compiles, but {len(traps)} step(s) hit a known run-time trap (see "
-                       "runtime_traps: each has its fix). Fix them before publish_playbook.")
     return out
 
 
@@ -1134,22 +911,15 @@ def _restore_soft_deleted(client, fsr_json) -> list[str]:
         if not uuid:
             continue
         try:
-            if client.get(f"/api/3/{entity}/{uuid}"):
-                continue
-        except Exception:  # noqa: BLE001, S110 - 404: absent or in the recycle bin
-            pass
-        try:
-            row = client.get(f"/api/3/{entity}/{uuid}", params={"$showDeleted": "true"})
-            if isinstance(row, dict) and row.get("deletedAt"):
-                client.put(f"/api/3/{entity}/{uuid}", data={"deletedAt": None}, params={"$showDeleted": "true"})
+            if client.records(entity).restore_if_deleted(uuid):
                 restored.append(f"{entity}/{uuid}")
-        except Exception:  # noqa: BLE001, S112 - genuinely absent, or not restorable
+        except Exception:  # noqa: BLE001, S112 - not restorable; deploy reports it for real
             continue
     return restored
 
 
 def _h_publish_playbook(client, *, yaml_text, overwrite_changed=False) -> Any:
-    result = _compile_playbook_yaml(yaml_text)
+    result = _compile_playbook_yaml(yaml_text, client)
     if not result.ok:
         return {"ok": False, "published": False, "errors": _compile_errors(result)}
     # deploy() (not a bare upsert_playbooks) so the playbooks land in a VISIBLE
@@ -1184,11 +954,6 @@ def _h_publish_playbook(client, *, yaml_text, overwrite_changed=False) -> Any:
 
 
 # -- module admin -----------------------------------------------------------
-# Field-spec coercion is shared with the provision_module workflow; it lives in
-# .._fields to avoid the verbs <-> workflow_tools <-> workflows import cycle.
-from .._fields import coerce_field_specs as _coerce_field_specs
-
-
 def _h_create_module(
     client,
     *,
@@ -1200,7 +965,8 @@ def _h_create_module(
     options=None,
 ) -> Any:
     """Create a module in staging (publish to make it live). RBAC optional via grant_to."""
-    fields = _coerce_field_specs(fields)
+    if fields:
+        fields = client.modules_admin.fields_from_specs(module, fields)
     kwargs: dict[str, Any] = {"label": label, "plural": plural, "fields": fields, "grant_to": grant_to}
     # Drop None-valued kwargs so create_module's own defaults apply; merge passthrough options.
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -1381,7 +1147,7 @@ def _h_wait_for_playbook_run(
 
 # -- record upsert ----------------------------------------------------------
 def _h_upsert_record(client, *, module, data, key=None, resolve_picklists=True, strict_picklists=True) -> Any:
-    data, converted = _coerce_dates(client, module, data)
+    data, converted = _prepare_write(client, module, data)
     rec = client.records(module).upsert(
         data, key=key, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
     )
@@ -1389,7 +1155,7 @@ def _h_upsert_record(client, *, module, data, key=None, resolve_picklists=True, 
 
 
 def _h_get_or_create_record(client, *, module, data, key="uuid", resolve_picklists=True, strict_picklists=True) -> Any:
-    data, converted = _coerce_dates(client, module, data)
+    data, converted = _prepare_write(client, module, data)
     record, created = client.records(module).get_or_create(
         data, key=key, resolve_picklists=resolve_picklists, strict_picklists=strict_picklists
     )
@@ -1432,42 +1198,17 @@ def _h_trigger_schedule_now(client, *, name=None, task_id=None) -> Any:
     return to_jsonable(client.schedules.trigger_now(name=name, task_id=task_id))
 
 
-_FIRE_LAG_SECONDS = 300  # beat records a fire minutes after it happens
-
-
-def _schedule_age_seconds(client, name) -> float | None:
-    from datetime import datetime
-
-    try:
-        row = client.schedules.get(name, typed=False) or {}
-        changed = row.get("date_changed")
-        if not changed:
-            return None
-        dt = datetime.fromisoformat(str(changed))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        return (datetime.now(UTC) - dt).total_seconds()
-    except Exception:  # noqa: BLE001 - unknown age: report as-is
-        return None
-
-
 def _h_schedule_audit(client, *, name, run_limit=10, wait_for_fire=False, timeout=360) -> Any:
     import time
 
     report = to_jsonable(client.schedules.audit(name, run_limit=run_limit))
     deadline = time.monotonic() + float(timeout)
-    while wait_for_fire and not (report.get("ever_fired") or report.get("runs")) and time.monotonic() < deadline:
+    while wait_for_fire and not report.get("ever_fired") and time.monotonic() < deadline:
         time.sleep(15)
         report = to_jsonable(client.schedules.audit(name, run_limit=run_limit))
-    if report.get("ever_fired") or report.get("runs"):
-        return report
-    age = _schedule_age_seconds(client, name)
-    if age is not None and age < _FIRE_LAG_SECONDS and report.get("enabled"):
-        # Not a failure yet: beat saves last_run_at/total_run_count late.
-        report["problems"] = [p for p in report.get("problems") or [] if "fire" not in p.lower()]
-        report["pending"] = True
-        report["note"] = (f"changed {int(age)}s ago; the scheduler records a fire a few minutes late. "
-                          "Call again with wait_for_fire=true instead of concluding it never fired.")
+    if report.get("pending"):
+        report["note"] = (f"its first fire is not due until {report.get('first_fire_due')}; call again "
+                          "with wait_for_fire=true instead of concluding it never fired")
     return report
 
 
@@ -1495,7 +1236,12 @@ def _h_record_lifecycle(
         start_date=start_date,
         end_date=end_date,
     )
-    return {"summary": life.summary(), "lifecycle": to_jsonable(life)}
+    life_json = to_jsonable(life)
+    return {
+        "summary": life.summary(),
+        "entity_uuid": entity_uuid,
+        "entries": [_slim_event(e.get("raw") or {}, e) for e in life_json.get("entries") or []],
+    }
 
 
 def _h_execution_context(client, *, run_pk, window_seconds=60) -> Any:
@@ -1516,7 +1262,44 @@ def _h_audit_activities(
         page_size=page_size,
         max_pages=max(1, -(-limit // page_size)),
     )
-    return {"total": len(items), "activities": to_jsonable(items[:limit])}
+    return {"total": len(items), "activities": [_slim_event(a) for a in to_jsonable(items[:limit])]}
+
+
+def _clip(v: Any, limit: int = 400) -> Any:
+    """A long text value cut to ``limit`` chars, saying how much was cut (get_record has it all)."""
+    if isinstance(v, str) and len(v) > limit:
+        return f"{v[:limit]}... (+{len(v) - limit} chars; get_record for the full text)"
+    return v
+
+
+def _slim_event(raw: dict[str, Any], entry: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One audit event or playbook run as the facts an agent reads: when, what, who, changes.
+
+    The full audit row repeats the record's name, uuid, team IRIs and source on
+    every event (~1 KB each), which put a record's history far over the output cap.
+    """
+    from datetime import UTC, datetime
+
+    entry = entry or {}
+    ms = entry.get("timestamp_ms") or raw.get("transactionDate")
+    changes = {
+        field: [_clip(v.get("oldData")), _clip(v.get("newData"))]
+        for field, v in (raw.get("data") or {}).items()
+        if isinstance(v, dict) and ("oldData" in v or "newData" in v)
+    }
+    out = {
+        "time": datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ") if ms else None,
+        "kind": entry.get("kind"),
+        "operation": entry.get("operation") or raw.get("operation"),
+        "user": entry.get("user") or raw.get("user"),
+        "playbook": entry.get("playbook_name") or raw.get("playbookName"),
+        "changes": changes or None,
+        "linked": entry.get("linked_entity_display") or (None if changes else raw.get("title")),
+        "run": entry.get("execution_pk"),
+        "run_status": entry.get("execution_status"),
+        "audit_id": raw.get("id"),
+    }
+    return {k: v for k, v in out.items() if v not in (None, "", {})}
 
 
 # -- playbook YAML reference ---------------------------------------------------
@@ -2807,10 +2590,12 @@ _TOOLS: tuple[ToolSpec, ...] = (
                 },
                 "wait": {"type": "boolean", "description": "Block until the install job finishes (default true)."},
                 "timeout": {"type": "number", "description": "Max seconds to wait (default 300)."},
-                "allow_same_version": {
-                    "type": "boolean",
-                    "description": "Reinstall a .tgz whose version is already installed. Refused by default: "
-                    "the box keeps running the old code for minutes. Prefer bumping the version.",
+                "on_existing_version": {
+                    "type": "string",
+                    "enum": ["bump_patch", "error", "allow"],
+                    "description": "When the .tgz's version is already installed: 'bump_patch' (default) "
+                    "installs it as the next patch version, 'error' refuses, 'allow' reinstalls in place and "
+                    "recycles the box's workers (republish) so the new code runs.",
                 },
             }
         ),
@@ -3173,6 +2958,22 @@ def _serialized_len(obj: Any) -> int | None:
         return None
 
 
+def _single_list_key(result: Any) -> str | None:
+    """The key of a dict result's only non-empty list (the shape list tools return)."""
+    if not isinstance(result, dict):
+        return None
+    keys = [k for k, v in result.items() if isinstance(v, list) and v]
+    return keys[0] if len(keys) == 1 else None
+
+
+def _skip(result: Any, offset: int) -> Any:
+    """Drop the first ``offset`` items of a list result, recording where it starts."""
+    key = _single_list_key(result)
+    if key is None:
+        return result
+    return {**result, key: result[key][offset:], "offset": offset}
+
+
 def _cap_output(result: Any, *, tool: str, cap: int | None = None) -> Any:
     """Bound a tool result's serialized size for the agent transport.
 
@@ -3223,7 +3024,12 @@ def _cap_output(result: Any, *, tool: str, cap: int | None = None) -> Any:
             def _try(m: int) -> tuple[bool, dict[str, Any]]:
                 trial = dict(base)
                 trial[key] = items[:m]
-                trial["_truncated"] = {"tool": tool, "shown": m, "total": n, "hint": hint}
+                start = int(result.get("offset") or 0)
+                trial["_truncated"] = {
+                    "tool": tool, "shown": m, "total": start + n, "next_offset": start + m,
+                    "hint": f"showing items {start}-{start + m - 1} of {start + n}; call {tool} again "
+                            f"with the same arguments and offset={start + m} for the next ones",
+                }
                 s = _serialized_len(trial)
                 return (s is not None and s <= cap), trial
 
@@ -3298,8 +3104,13 @@ def dispatch(client, name: str, arguments: dict[str, Any] | None = None) -> Any:
         return refusal
     # confirm is a gate argument, not a handler argument.
     args.pop("confirm", None)
+    offset = None
+    if not spec.mutating and "offset" not in (spec.input_schema.get("properties") or {}):
+        offset = args.pop("offset", None)
     try:
         result = spec.handler(client, **args)
+        if offset:
+            result = _skip(result, int(offset))
     except TypeError as exc:  # bad/missing arguments for the handler
         return _agent_error(exc, tool=name)
     except Exception as exc:  # noqa: BLE001 - surface every failure as data to the agent

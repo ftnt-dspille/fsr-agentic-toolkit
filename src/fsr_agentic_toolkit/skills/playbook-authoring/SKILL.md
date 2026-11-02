@@ -15,7 +15,7 @@ description: >-
    your access. Never guess a field name.
 2. `playbook_yaml_reference(topic=<step type>)` for any step you have not written before.
 3. Write the YAML, then `compile_playbook_yaml`. Fix every `errors`, `required_fixes`
-   and `runtime_traps` entry and compile again until `ok` is true.
+   entry, read every warning, and compile again until `ok` is true.
 4. `publish_playbook` (or `run_playbook_yaml` for a one-off test run that cleans up).
 5. Prove it: create a test record that should trigger it, `wait_for_playbook_run`,
    then read the record back. The read-back is the proof, not the run status.
@@ -30,8 +30,9 @@ The compile check flags these; know why so you fix them right:
   `seq`. Use `or []` / `or {}` instead of type checks.
 - A `find_record` step's result **is** the row list. `hydra:member` on it is always
   empty, so a sweep built on it runs clean and changes nothing.
-- Never write a picklist as a fixed `/api/3/picklists/<uuid>` in a record write. Use
-  `{{ "AlertStatus" | picklist("Investigating", "@id") }}`.
+- Never compare a picklist field to its text in a trigger, condition or filter
+  (`severity == "Critical"`): it silently never matches. Compare `severity.itemValue`,
+  or the value's `@id` from `{{ "Severity" | picklist("Critical", "@id") }}`.
 - Dates are epoch seconds on the box. The record tools convert ISO for you; inside a
   playbook, convert explicitly.
 

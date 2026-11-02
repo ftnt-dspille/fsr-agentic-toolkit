@@ -107,6 +107,11 @@ def _orient(client: Any, goal: str, modules: list[str] | None, connectors: bool)
         return run.result("blocked")
     _box_context(client, run)
     run.data["modules"] = {}
+    if not modules:
+        # An empty dict reads as "the box has no modules"; say why it is empty.
+        run.unknown("no modules were named, so none were described; "
+                    "list_modules lists every module, survey_box(modules=[...]) describes some")
+        run.next("list_modules()", "every module on the box, by display name and API type", 2)
 
     for module in modules or []:
         if not A._IDENT.fullmatch(module or ""):

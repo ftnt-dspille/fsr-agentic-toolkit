@@ -18,6 +18,11 @@ def _page(members):
 
 
 class _Records:
+    def where_body(self, where, *, sort=None):
+        # pyfsr's real predicate lowering, against this fake's schema.
+        from pyfsr.records import RecordSet
+        return RecordSet.where_body(self, where, sort=sort)
+
     def __init__(self, store, members):
         self.store = store
         self._members = members
@@ -36,8 +41,19 @@ class _Client:
         self.store = {}
         self._members = members if members is not None else []
 
+    @property
+    def modules(self):
+        client = self
+
+        class _Modules:
+            def describe(self, module):
+                return client.describe_module(module)
+        return _Modules()
+
     def records(self, module):
-        return _Records(self.store, self._members)
+        recs = _Records(self.store, self._members)
+        recs.client, recs.module = self, module
+        return recs
 
     def describe_module(self, module):
         return {"module": module, "fields": _FIELDS}

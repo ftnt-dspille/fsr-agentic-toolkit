@@ -11,6 +11,11 @@ _FIELDS = [
 
 
 class _Records:
+    def where_body(self, where, *, sort=None):
+        # pyfsr's real predicate lowering, against this fake's schema.
+        from pyfsr.records import RecordSet
+        return RecordSet.where_body(self, where, sort=sort)
+
     def __init__(self, store, *, count=0, related=None, comments=None):
         self.store = store
         self._count = count
@@ -49,8 +54,19 @@ class _Client:
         self._count, self._related, self._comments = count, related, comments
         self.comments = _Comments(self.store)
 
+    @property
+    def modules(self):
+        client = self
+
+        class _Modules:
+            def describe(self, module):
+                return client.describe_module(module)
+        return _Modules()
+
     def records(self, module):
-        return _Records(self.store, count=self._count, related=self._related, comments=self._comments)
+        recs = _Records(self.store, count=self._count, related=self._related, comments=self._comments)
+        recs.client, recs.module = self, module
+        return recs
 
     def describe_module(self, module):
         return {"module": module, "fields": _FIELDS}

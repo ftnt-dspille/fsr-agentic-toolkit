@@ -21,7 +21,7 @@ from fsr_agentic_toolkit.verbs.archetypes import (
     harvest_from_zip,
     map_use_case,
 )
-from fsr_agentic_toolkit.verbs.archetypes.harvest import _dedupe_manifest, _picklist_name, _uuid_tail
+from fsr_agentic_toolkit.verbs.archetypes.harvest import _dedupe_manifest, _uuid_tail
 from fsr_agentic_toolkit.verbs.archetypes.record import ConnectorUse
 
 # Machine-local corpus root (skipped when absent). Set PYFSR_CORPUS_ROOT to point
@@ -329,18 +329,6 @@ def test_uuid_tail_extracts_trailing_segment():
     assert _uuid_tail(None) is None
     assert _uuid_tail("") is None
     assert _uuid_tail("/api/3/x/") == "x"  # trailing slash tolerated
-
-
-def test_picklist_name_resolves_listname_filter():
-    attr = {
-        "dataSource": {"query": {"filters": [{"field": "listName__name", "operator": "eq", "value": "IncidentStatus"}]}}
-    }
-    assert _picklist_name(attr) == "IncidentStatus"
-
-
-def test_picklist_name_none_when_no_filter():
-    assert _picklist_name({"dataSource": {"query": {"filters": []}}}) is None
-    assert _picklist_name({}) is None
 
 
 def test_dedupe_manifest_keeps_first_step_per_pair():

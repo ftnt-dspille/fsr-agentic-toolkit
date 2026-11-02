@@ -6,6 +6,7 @@ when an operation genuinely needs a JWT -- never a raw traceback it will retry.
 """
 from __future__ import annotations
 
+from pyfsr.api.users import UsersAPI
 from pyfsr.exceptions import UnsupportedAuthOperationError
 
 from fsr_agentic_toolkit.verbs import tools
@@ -16,11 +17,15 @@ class _ApiKeyClient:
 
     base_url = "https://fortisoar.example.com"
 
-    class _Users:
+    class _Users(UsersAPI):
+        def __init__(self, client):
+            self.client = client
+
         def whoami(self):  # the DAS /api/auth route rejects API keys
             raise UnsupportedAuthOperationError("auth", "APIKeyAuth")
 
-    users = _Users()
+    def __init__(self):
+        self.users = self._Users(self)
 
     def get(self, path):
         assert path == "/api/3/actors/current"
@@ -35,7 +40,10 @@ class _ApiKeyClient:
 class _JwtClient:
     base_url = "https://fortisoar.example.com"
 
-    class _Users:
+    class _Users(UsersAPI):
+        def __init__(self, client=None):
+            self.client = client
+
         def whoami(self):
             return {"loginid": "analyst", "person_uuid": "p-1", "user_id": "d-1",
                     "email": "a@example.com", "name": "A Analyst"}

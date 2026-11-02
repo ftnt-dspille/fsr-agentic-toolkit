@@ -19,5 +19,6 @@ description: >-
   from what you infer, and list what you could not check.
 - **Gaps are findings.** "No reputation connector is configured, so the destination
   is unverified" is a correct answer; a filled-in guess is not.
-- **Stale is not broken.** After a connector reinstall, the box may run the old code
-  for a few minutes (`retry_after_seconds`). Wait before judging the change.
+- **A reinstalled connector gets a new version.** `install_connector` bumps the patch
+  version when that version is already on the box, because a same-version reinstall
+  keeps serving the old code. Use the version it reports.

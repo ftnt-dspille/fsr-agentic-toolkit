@@ -293,8 +293,13 @@ class _Box:
 
     def put(self, ep, data=None, params=None, **kw):
         ent, _, u = ep.removeprefix("/api/3/").partition("/")
-        assert (params or {}).get("$showDeleted") == "true" and data == {"deletedAt": None}
+        # pyfsr's restore PUTs the full row with deletedAt cleared (live-verified).
+        assert (params or {}).get("$showDeleted") == "true" and data.get("deletedAt", 0) is None
         self.deleted.discard((ent, u)); self.puts.append(ep)
+
+    def records(self, entity):
+        from pyfsr.records import RecordSet
+        return RecordSet(self, entity, check_values=False)
 
 
 def test_publish_restores_soft_deleted_workflow_step_and_route():
@@ -318,11 +323,12 @@ def test_publish_retries_once_after_restoring_what_failed_it():
             raise RuntimeError("500 on step t")
         return {"new": [], "changed": ["pb"], "unchanged": []}
 
-    client = SimpleNamespace(get=box.get, put=box.put, workflow_collections=SimpleNamespace(deploy=deploy))
+    client = SimpleNamespace(get=box.get, put=box.put, records=box.records,
+                             workflow_collections=SimpleNamespace(deploy=deploy))
     comp = SimpleNamespace(ok=True, fsr_json=fj)
     import pytest as _p
     with _p.MonkeyPatch.context() as mp:
-        mp.setattr(T, "_compile_playbook_yaml", lambda _y: comp)
+        mp.setattr(T, "_compile_playbook_yaml", lambda _y, _c=None: comp)
         mp.setattr(T, "_compiled_collection", lambda _r: {"name": "c", "workflows": [{"name": "pb"}]})
         out = T._h_publish_playbook(client, yaml_text="x")
     assert len(calls) == 2 and out["published"] and out["restored"] == ["workflow_steps/t"]

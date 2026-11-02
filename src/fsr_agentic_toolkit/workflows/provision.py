@@ -17,65 +17,10 @@ from typing import Any
 
 from fsr_playbooks.mcp_server import _shared
 
-from .._fields import coerce_field_specs
 from . import access as A
 from .result import WorkflowResult, WorkflowRun
 
 DEFAULT_ROLES = ("Full App Permissions",)
-
-
-#: Seconds between probes while the box is mid-publish.
-IDLE_INTERVAL = 5.0
-
-
-def _when_idle(read: Any, states: list[str], timeout: float = 600.0,
-               interval: float | None = None) -> Any:
-    """``read()`` once the box is not mid-publish. Each distinct progress state
-    the box answers with (a 5xx / migrate marker) is appended to ``states``;
-    any other error propagates. Raises TimeoutError naming the last state."""
-    import time
-
-    from pyfsr.exceptions import is_migrate_transient
-
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            return read()
-        except Exception as exc:
-            if not is_migrate_transient(exc):
-                raise
-            state = str(getattr(exc, "message", "") or exc).strip()[:120] or "publish in progress"
-            if not states or states[-1] != state:
-                states.append(state)
-            if time.monotonic() >= deadline:
-                raise TimeoutError(state) from exc
-            time.sleep(IDLE_INTERVAL if interval is None else interval)
-
-
-def _wait_published(admin: Any, module: str, timeout: float = 180.0,
-                    interval: float = 5.0) -> bool:
-    """Poll until ``module`` shows up in the live schema, or ``timeout``.
-
-    ``admin.publish()`` returns once it has confirmed the migrate via
-    ``/api/publish/error``, but the live ``model_metadatas`` that
-    :meth:`is_published` reads can lag that confirmation by a few seconds on
-    8.0+, so a single check right after publish reads ``False`` for a module that
-    is in fact committing. Poll instead, riding any migrate-transient 503."""
-    import time
-
-    from pyfsr.exceptions import is_migrate_transient
-
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            if admin.is_published(module):
-                return True
-        except Exception as exc:
-            if not is_migrate_transient(exc):
-                raise
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(interval)
 
 
 def _modname(p: Any) -> str:
@@ -148,24 +93,14 @@ def provision_module(module: str, label: str = "", plural: str = "",
     # 1. create
     if not (published or staged):
         admin.create_module(module, label=label or None, plural=plural or None,
-                            fields=coerce_field_specs(fields))
+                            fields=admin.fields_from_specs(module, fields) if fields else None)
         run.finding(f"created {module} (staged)",
                     [run.evidence("module", module, "create_module")], "high")
 
-    # 2. publish, only when nothing else is staged. A box already mid-publish
-    # answers 503 progress states ("Generating Models", "Clearing Cache", ...):
-    # wait them out and report them, never return them as errors.
-    states: list[str] = []
-    try:
-        pending_rows = _when_idle(admin.pending_changes, states)
-    except TimeoutError as exc:
-        run.unknown(f"the box stayed busy with another publish: {exc}")
-        run.next("provision_module(...) again once the publish finishes",
-                 "the box is mid-publish", 3)
-        return run.result("blocked")
-    if states:
-        run.finding("waited out a publish already in progress: " + " -> ".join(states),
-                    [run.evidence("schema", "publish_progress", " -> ".join(states))], "high")
+    # 2. publish, only when nothing else is staged (publish is appliance-wide).
+    # pyfsr's publish() waits out a migrate already running and returns once the
+    # module is live (live-verified: published, listed and writable within ~1s).
+    pending_rows = admin.pending_changes()
     if not admin.is_published(module):
         pending = [_modname(p) for p in pending_rows]
         others = sorted({m for m in pending if m != module})
@@ -187,9 +122,7 @@ def provision_module(module: str, label: str = "", plural: str = "",
             return run.result("blocked")
         if progress:
             run.evidence("schema", "publish_progress", " -> ".join(progress))
-        # The live schema can lag publish()'s own completion check, so poll rather
-        # than read is_published once (a single read races the migrate on 8.0+).
-        ok = _wait_published(admin, module)
+        ok = admin.is_published(module)
         run.finding(f"published {module}" if ok else f"publish did not make {module} live",
                     [pev, run.evidence("module", module, f"published={ok}")], "high")
         if not ok:
