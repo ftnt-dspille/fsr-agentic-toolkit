@@ -1,6 +1,6 @@
 """list_registered_mcp_tools / call_registered_mcp_tool hand the server name and
-arguments straight to pyfsr's registered-server MCP client. The call counts as a
-write (the remote tool decides its own side effects); the listing does not."""
+arguments straight to pyfsr's registered-server MCP client. The call is confirm-
+gated (the remote tool decides its own side effects); the listing is a read."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -35,9 +35,9 @@ def test_call_defaults_arguments_and_returns_result():
     assert client.ai.calls == [("call", "s", "ask_question", {}, None)]
 
 
-def test_call_is_a_write_and_list_is_not():
+def test_call_is_confirm_gated_and_list_is_not():
     assert tools.REGISTRY["call_registered_mcp_tool"].mutating is True
-    assert tools.REGISTRY["call_registered_mcp_tool"].destructive is False
+    assert tools.REGISTRY["call_registered_mcp_tool"].destructive is True
     assert tools.REGISTRY["list_registered_mcp_tools"].mutating is False
 
 

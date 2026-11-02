@@ -1865,7 +1865,8 @@ _TOOLS: tuple[ToolSpec, ...] = (
         "Run one tool on an MCP server registered in FortiSOAR (external or built-in), resolving "
         "its url and authentication from the registration, so you reach the same server and "
         "credential FortiSOAR's own agents use. The tool's side effects are the remote server's, "
-        "so this counts as a write. Call list_registered_mcp_tools first for names and schemas.",
+        "so every call needs confirm: true; tell the user the server and tool first. Call "
+        "list_registered_mcp_tools first for names and schemas.",
         _obj(
             {
                 "server": {"type": "string", "description": "The registered MCP server name (as list_ai_config shows it) or uuid."},
@@ -1876,7 +1877,10 @@ _TOOLS: tuple[ToolSpec, ...] = (
             ["server", "tool"],
         ),
         _h_call_registered_mcp_tool,
-        mutating=True,  # a registered tool can do anything on its server, so READONLY refuses it
+        mutating=True,
+        # A proxy: a registered tool can do anything on its server (a built-in one can block an
+        # indicator), so every call is confirm-gated like the toolkit's own destructive tools.
+        destructive=True,
     ),
     ToolSpec(
         "create_module",
