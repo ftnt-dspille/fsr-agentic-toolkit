@@ -105,11 +105,12 @@ def _mcp(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from . import init_cmd
+    from . import init_cmd, skills_cmd
 
     parser = argparse.ArgumentParser(prog="fsr-agentic-toolkit", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     init_cmd.build_subparser(sub)
+    skills_cmd.build_subparser(sub)
     sub.add_parser("mcp", help="run the MCP server on stdio").set_defaults(func=_mcp)
     sub.add_parser("tools", help="list the tools the gate allows, with their tier").set_defaults(func=_tools)
     p_call = sub.add_parser("call", help="call any tool by name with JSON arguments")

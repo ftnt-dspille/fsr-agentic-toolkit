@@ -107,6 +107,20 @@ fsr-agentic-toolkit call search_records '{"module": "alerts", "limit": 5}'
 fsr-agentic-toolkit mcp        # MCP server on stdio
 ```
 
+## Agent skills
+
+The toolkit ships skills that teach a coding agent how to use it well: playbook
+authoring, debug and repair, proving the work, connector secrets, alert
+investigation, box onboarding, and connector building.
+
+```
+fsr-agentic-toolkit skills                                  # list them
+fsr-agentic-toolkit skills --install                        # Claude Code: .claude/skills
+fsr-agentic-toolkit skills --install --agents-md AGENTS.md  # Codex / OpenCode read AGENTS.md
+```
+
+An installed skill you have edited is kept unless you pass `--force`.
+
 The box comes from `FSR_*` environment variables or `--instance <alias>` from
 `~/.pyfsr/instances.toml`. An explicit `FSR_BASE_URL` wins over the default
 alias.
