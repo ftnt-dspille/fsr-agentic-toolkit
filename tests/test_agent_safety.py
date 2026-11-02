@@ -95,6 +95,8 @@ def test_destructive_tools_are_exactly_the_documented_set():
         # privilege-raising, so confirm-gated like the deletes:
         "create_user",
         "install_connector",
+        # a proxy to any registered MCP server's tools, whatever they do
+        "call_registered_mcp_tool",
         # the one tier-3 workflow: writes schema, publishes, grants a role
         "provision_module",
     }

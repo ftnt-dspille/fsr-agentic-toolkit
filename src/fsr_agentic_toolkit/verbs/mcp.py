@@ -20,7 +20,7 @@ agent UX, just raw FortiSOAR access.
 - ``FSR_MCP_ALLOW_TOOLS`` / ``FSR_MCP_DENY_TOOLS`` — comma-separated names or
   fnmatch globs to narrow the surface.
 - High-impact tools (``delete_record``, ``delete_module``, ``delete_schedule``,
-  ``publish_module_changes``, ``create_user``, ``install_connector``) never run without
+  ``publish_module_changes``, ``create_user``, ``install_connector``, ``call_registered_mcp_tool``) never run without
   ``confirm: true`` in their arguments.
 
 Requires the optional dependency: ``pip install 'pyfsr[mcp]'``.
