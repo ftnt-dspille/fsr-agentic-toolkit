@@ -533,6 +533,19 @@ def _h_list_ai_config(client) -> Any:
     }
 
 
+def _h_list_registered_mcp_tools(client, *, server, token=None) -> Any:
+    tools = client.ai.list_registered_tools(server, token=token)
+    return {"server": server, "tools": [{"name": t.name, "description": t.description} for t in tools]}
+
+
+def _h_call_registered_mcp_tool(client, *, server, tool, arguments=None, token=None) -> Any:
+    result = client.ai.call_registered_tool(server, tool, arguments or {}, token=token)
+    # result.ok reads FortiSOAR's own {"status": ...} envelope; a third-party server has no
+    # status, so a call that came back without an error is the success signal there.
+    ok = result.ok if result.status is not None else result.error is None
+    return {"server": server, "tool": tool, "ok": ok, "result": result.result, "error": result.error}
+
+
 # -- identity / onboarding ----------------------------------------------------
 def _h_whoami(client) -> Any:
     """Who am I + where am I: the connect-and-verify handshake for an agent.
@@ -1838,6 +1851,32 @@ _TOOLS: tuple[ToolSpec, ...] = (
         "reasoning profiles, and the registered MCP servers the agents can call.",
         _obj({}),
         _h_list_ai_config,
+    ),
+    ToolSpec(
+        "list_registered_mcp_tools",
+        "List the tools an MCP server registered in FortiSOAR advertises, by opening a real MCP "
+        "tools/list against it with the url and authentication stored in its registration. Use "
+        "list_ai_config to find the registered server names first.",
+        _obj({"server": {"type": "string", "description": "The registered MCP server name (as list_ai_config shows it) or uuid."}, "token": {"type": "string", "description": "Credential to use when the stored one is masked or rotated. Optional."}}, ["server"]),
+        _h_list_registered_mcp_tools,
+    ),
+    ToolSpec(
+        "call_registered_mcp_tool",
+        "Run one tool on an MCP server registered in FortiSOAR (external or built-in), resolving "
+        "its url and authentication from the registration, so you reach the same server and "
+        "credential FortiSOAR's own agents use. The tool's side effects are the remote server's, "
+        "so this counts as a write. Call list_registered_mcp_tools first for names and schemas.",
+        _obj(
+            {
+                "server": {"type": "string", "description": "The registered MCP server name (as list_ai_config shows it) or uuid."},
+                "tool": {"type": "string", "description": "The tool name, from list_registered_mcp_tools."},
+                "arguments": {"type": "object", "description": "The tool's arguments, shaped by its input schema."},
+                "token": {"type": "string", "description": "Credential to use when the stored one is masked or rotated. Optional."},
+            },
+            ["server", "tool"],
+        ),
+        _h_call_registered_mcp_tool,
+        mutating=True,  # a registered tool can do anything on its server, so READONLY refuses it
     ),
     ToolSpec(
         "create_module",
