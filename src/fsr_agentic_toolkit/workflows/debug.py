@@ -82,6 +82,36 @@ def _safe_grounded_help(connector: str, op: str, step_name: str) -> dict:
         return {}
 
 
+_PREFIXED_JINJA = re.compile(r"/api/3/[A-Za-z0-9_]+/\{\{")
+
+
+def _prefixed_templates(yaml_text: str, step_name: str) -> list[str]:
+    """String arguments of ``step_name`` that put /api/3/<module>/ in front of Jinja."""
+    import yaml
+
+    try:
+        doc = yaml.safe_load(yaml_text) or {}
+    except yaml.YAMLError:
+        return []
+    found: list[str] = []
+
+    def walk(v: Any) -> None:
+        if isinstance(v, str) and _PREFIXED_JINJA.search(v):
+            found.append(v)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+
+    for pb in doc.get("playbooks") or []:
+        for step in pb.get("steps") or []:
+            if isinstance(step, dict) and step.get("name") == step_name:
+                walk({k: v for k, v in step.items() if k not in ("name", "type", "next")})
+    return found
+
+
 def _static_prerun_findings(run, yaml_text: str) -> int:
     """Diagnose a playbook that has not run yet, from the grounded oracle, with no run to read.
 
@@ -260,6 +290,18 @@ def debug_run(playbook_or_id: str, yaml_text: str | None = None) -> WorkflowResu
                      f"value the failing call reports ({str(rendered)[:120]!r}): likely root cause")
         run.finding(claim, cites, "high")
         bad.append(d)
+    # Without the library's render diagnostics (its run-env probes are unshipped), the
+    # same doubled IRI is still provable from two facts: the failing call's own URL is
+    # doubled, and the failing step's YAML prefixes /api/3/<module>/ to a Jinja value.
+    if (failing_step and yaml_text and not any("doubled IRI" in f.claim for f in run._findings)
+            and _DOUBLE_IRI.search(str(error or ""))):
+        for template in _prefixed_templates(yaml_text, str(failing_step)):
+            ev = run.evidence("step", f"{failing_step}:yaml", f"template {template}")
+            run.finding(f"Step {failing_step!r} builds a doubled IRI: the template prefixes "
+                        f"/api/3/<module>/ to a value that is already a full IRI, and the failing "
+                        f"call's URL is doubled; use the IRI as-is: likely root cause",
+                        [ev] + ([step_ev] if step_ev else []), "high")
+            break
     for h in raw.get("hints") or []:
         run.finding(str(h), [run_ev], "medium")
 
