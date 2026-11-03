@@ -26,9 +26,21 @@ from pathlib import Path
 def _server_command() -> tuple[str, list[str]]:
     """The command + args that launch the toolkit MCP server on this machine."""
     exe = shutil.which("fsr-agentic-toolkit")
+    if not exe:
+        # Run by full path from a venv that is not activated: the console script
+        # sits next to the interpreter running us.
+        beside = Path(sys.executable).with_name("fsr-agentic-toolkit")
+        exe = str(beside) if beside.exists() else None
     if exe:
         return exe, ["mcp"]
-    return "uvx", ["--from", "fsr-agentic-toolkit", "fsr-agentic-toolkit", "mcp"]
+    # Last resort: uvx, pinned to this version so the server matches what was
+    # installed (an unpinned uvx resolves whatever is newest on PyPI).
+    try:
+        from importlib.metadata import version
+        spec = f"fsr-agentic-toolkit=={version('fsr-agentic-toolkit')}"
+    except Exception:  # noqa: BLE001 -- not installed as a distribution
+        spec = "fsr-agentic-toolkit"
+    return "uvx", ["--from", spec, "fsr-agentic-toolkit", "mcp"]
 
 
 def _env_block(args: argparse.Namespace) -> dict[str, str]:
@@ -100,6 +112,9 @@ def _codex_snippet(args: argparse.Namespace) -> str:
              f"command = {_toml_str(command)}"]
     if cmd_args:
         lines.append("args = [" + ", ".join(_toml_str(a) for a in cmd_args) + "]")
+    # Codex waits 10s for an MCP server by default; a first start (imports, a
+    # cold uvx resolve) can exceed it, and the chat then runs with no tools.
+    lines.append("startup_timeout_sec = 60")
     lines.append("")
     lines.append("[mcp_servers.fortisoar.env]")
     lines += [f"{k} = {_toml_str(v)}" for k, v in _env_block(args).items()]
