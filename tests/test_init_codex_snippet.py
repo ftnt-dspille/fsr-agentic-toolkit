@@ -7,8 +7,8 @@ from fsr_agentic_toolkit import init_cmd
 
 
 def _args(**kw):
-    base = dict(url="https://fortisoar.example.com", username="agent", password="<your-password>",
-                api_key=None, no_verify_ssl=True, readonly=True)
+    base = {"url": "https://fortisoar.example.com", "username": "agent", "password": "<your-password>",
+                "api_key": None, "no_verify_ssl": True, "readonly": True}
     base.update(kw)
     return argparse.Namespace(**base)
 
