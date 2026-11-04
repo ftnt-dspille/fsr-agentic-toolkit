@@ -55,7 +55,7 @@ from pyfsr.client import FortiSOAR
 from pyfsr.config import EnvConfig
 from pyfsr.instances import InstanceRegistry
 
-from .approval import require_approval, tool_hints
+from .hints import tool_hints
 from .tools import dispatch, tool_schemas
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -218,19 +218,6 @@ def _call(client: FortiSOAR, name: str, arguments: dict[str, Any] | None) -> lis
     return _text_content(dispatch(client, name, arguments or {}))
 
 
-def _target_label(registry: Any, instance: str | None) -> str:
-    """'alias (https://host)' for the box a call will hit, shown in the approval prompt."""
-    try:
-        rows = registry.describe()
-        row = next((r for r in rows if r.get("instance") == instance), None) \
-            or next((r for r in rows if r.get("default")), None)
-        if row:
-            return f"{row.get('instance')} ({row['base_url']})" if row.get("base_url") else str(row.get("instance"))
-    except Exception:  # noqa: BLE001, S110 - a label only; never block the prompt on it
-        pass
-    return instance or "the configured FortiSOAR box"
-
-
 _CALL_LOCK = threading.Lock()
 
 
@@ -309,17 +296,7 @@ def build_server(target: Any) -> Server:
         return types.ListToolsResult(tools=_mcp_tools(registry))
 
     async def on_call_tool(ctx: Any, params: Any) -> Any:
-        # Writes are put to the human first (see verbs/approval.py); reads go straight through.
-        gate = await require_approval(
-            ctx.session, params.name, dict(params.arguments or {}),
-            _target_label(registry, (params.arguments or {}).get("instance")),
-            request_id=getattr(ctx, "request_id", None),
-            input_responses=getattr(params, "input_responses", None),
-            request_state=getattr(params, "request_state", None))
-        if gate is not None and not isinstance(gate, dict):
-            return gate  # an InputRequiredResult: the client asks the user, then retries this call
-        if gate is not None:
-            return types.CallToolResult(content=_text_content(gate))
+        # Approval is left to the client, which decides from the tool annotations (verbs/hints.py).
         # Handlers are synchronous and some run their own event loop (pyfsr's MCP client calls
         # asyncio.run), which fails on this server's loop, so they run in a worker thread. The
         # lock keeps them one at a time, as they were on the loop: workflows bind a process-wide

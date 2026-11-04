@@ -50,50 +50,21 @@ tier 3 and need `confirm: true`. Environment policy:
 
 - `FSR_MCP_READONLY=1` drops every write.
 - `FSR_MCP_ALLOW_TOOLS` / `FSR_MCP_DENY_TOOLS` take comma-separated names.
-- `FSR_MCP_APPROVAL=auto|require|off` (default `auto`) puts every write to the **user** before
-  it runs.
 
-### Approving writes, in any coding agent
+### Approving writes
 
-Coding agents do not share a permissions file format, but they all speak MCP, so the
-protection lives in the server:
+Approval is the MCP client's job, so the server does not prompt. Coding agents already ask the
+user before a tool runs, and they decide what to ask about from the standard annotations the
+server advertises:
 
-1. **Tool hints.** Every tool is advertised with `readOnlyHint` / `destructiveHint`, the
-   standard annotations a client uses to decide what may run without asking.
-2. **Approval prompt.** Before a write, the server asks the user through the client's own UI
-   (MCP elicitation): the target box, the tool, and the arguments with anything
-   credential-shaped masked. Anything but an explicit yes does nothing and tells the model
-   not to retry. Reads never prompt, and a call the policy would refuse anyway is refused
-   without bothering the user.
-
-   `auto` asks when the client supports elicitation and otherwise runs the write, leaving it
-   to the client's own tool prompts. `require` refuses the write when the client cannot be
-   asked. `off` never asks.
+1. **Tool hints.** Every tool is advertised with `readOnlyHint` / `destructiveHint`, derived
+   from its tier in the registry. A client uses them to decide what may run without asking.
+2. **`confirm: true`.** Destructive tools also refuse to run without it, so a call that was
+   never meant to be destructive cannot become one by accident.
 3. **Claude Code rules.** `fsr-agentic-toolkit permissions` prints (or `--write PATH` merges)
    `allow` rules for every read and `ask` rules for every write, generated from the tool
-   registry. Other agents rely on layers 1 and 2.
-
-`FSR_MCP_APPROVAL_TIMEOUT` (seconds, default 300) bounds the wait: a client that accepts the
-request but never answers (a headless run) gets a refusal, not a hang.
-
-MCP has two protocol eras and the server speaks both. A client on the older one is sent the
-approval request directly. On the 2026-07-28 protocol over stdio a server may not send requests
-at all, so the server answers the call with an input-required result carrying the approval form;
-the client asks the user and retries the same call with the answer, which is honoured only when
-it matches that exact tool and arguments.
-
-Measured with the real clients (each driven through its interactive UI with a person's
-keystrokes, and headless), against a stub box:
-
-| Client | Declares elicitation | Interactive approve / decline | Headless |
-|---|---|---|---|
-| Claude Code 2.1.312 | yes | prompt appears ("MCP server requests your input"), tick the box and Accept; works | declines, nothing written |
-| Codex 0.165.0 | yes | prompt appears (`1. True / 2. False`); works | cancels, nothing written; also gates the write itself on the tool's hint |
-| OpenCode 2.2.0 | yes | prompt appears (`1. Yes / 2. No`, No by default); works | never answers, so the timeout refuses it |
-
-Gemini CLI, Cursor and Copilot were not available to test. A client that does not declare
-elicitation falls back to `auto` (the write runs under that client's own tool prompts) or, with
-`require`, is refused.
+   registry, so the client asks on exactly the tools that change the box. A write tool added
+   later is on neither list, so it prompts by default.
 
 ## Install and use
 

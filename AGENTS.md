@@ -56,7 +56,8 @@ its own (e.g. re-running `validate_connector` after a single edit).
 - `FSR_MCP_READONLY=1` - hide and refuse every mutating tool.
 - `FSR_MCP_ALLOW_TOOLS` / `FSR_MCP_DENY_TOOLS` - comma-separated names or globs to
   narrow the surface.
-- `FSR_MCP_APPROVAL=auto|require|off` - writes are put to the human first. If a write comes
-  back `ApprovalDeclined`, the user said no: do not retry the same call, ask what they want.
-  `ApprovalUnavailable` means the client cannot ask (`require` mode) or nobody answered within
-  `FSR_MCP_APPROVAL_TIMEOUT` seconds. `ApprovalMismatch` means an approval was for a different call.
+
+Approval is the MCP client's job: the server does not prompt. Every tool is advertised with
+`readOnlyHint` / `destructiveHint`, and the client asks the user from those (Claude Code users can
+generate matching allow/ask rules with `fsr-agentic-toolkit permissions`). If the client reports
+that the user declined a call, do not retry the same call: ask what they want.

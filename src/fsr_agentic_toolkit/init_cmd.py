@@ -214,10 +214,9 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(
         "\nsafety: add FSR_MCP_READONLY=1 to the env block for a read-only surface, "
         "or FSR_MCP_ALLOW_TOOLS/FSR_MCP_DENY_TOOLS to narrow it. Destructive tools "
-        "always need confirm=true. By default every write asks the user to approve first and "
-        "is refused when the client cannot be asked (FSR_MCP_APPROVAL=require, the default; "
-        "auto falls back to the client's own prompts, off never asks). For Claude Code, "
-        "`fsr-agentic-toolkit permissions` prints matching allow/ask rules."
+        "always need confirm=true. Approval is left to the client: every tool is advertised "
+        "with read-only/destructive annotations, and the client asks the user from those. "
+        "For Claude Code, `fsr-agentic-toolkit permissions` prints matching allow/ask rules."
     )
     from .verbs.mcp import OPERATING_GUIDE
 
@@ -228,8 +227,8 @@ def cmd_init(args: argparse.Namespace) -> int:
 def claude_permissions(server: str = "fortisoar") -> dict:
     """Claude Code ``permissions`` rules derived from the tool registry: every read is allowed,
     every write asks in the terminal. A write tool added later is on neither list, so it
-    prompts by default. The server's own approval prompt (verbs/approval.py) works in any MCP
-    client; these rules are the deterministic Claude Code layer on top."""
+    prompts by default. Other clients decide from the tool annotations (verbs/hints.py); these
+    rules are the deterministic Claude Code layer on top."""
     from .verbs.mcp import LIST_INSTANCES
     from .verbs.tools import enabled_tools
 

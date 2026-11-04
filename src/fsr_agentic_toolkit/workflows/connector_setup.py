@@ -18,7 +18,7 @@ folder or name starting with the connector. A reference for another connector is
 model cannot point one service's key at a different connector. The operator can also pin where
 secrets may be sent with ``FSR_SECRET_ALLOWED_HOSTS`` (comma-separated host names, suffix
 match): any server/url/host field must then name an allowed host. The destination host is
-always reported, and shown in the approval prompt through the field values.
+always reported.
 
 The other direction is closed too: a literal value for a secret field is refused without
 echoing it, and every string in the result (findings, evidence, errors, the healthcheck
