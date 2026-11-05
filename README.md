@@ -49,6 +49,7 @@ Every call goes through one gate. Writes are tier 2. Destructive tools are
 tier 3 and need `confirm: true`. Environment policy:
 
 - `FSR_MCP_READONLY=1` drops every write.
+- `FSR_MCP_TOOL_TIMEOUT=<seconds>` caps every tool call (default 120; `0` disables); a timed-out call returns a `ToolTimeout` error instead of hanging the session.
 - `FSR_MCP_ALLOW_TOOLS` / `FSR_MCP_DENY_TOOLS` take comma-separated names.
 
 ### Approving writes

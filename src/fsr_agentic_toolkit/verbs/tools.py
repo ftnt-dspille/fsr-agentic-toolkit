@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import threading
 from typing import Any
 
 from pyfsr.exceptions import (
@@ -2837,6 +2838,72 @@ def to_openai_tools() -> list[dict[str, Any]]:
     ]
 
 
+#: Wall-clock ceiling for one tool call, in seconds. Every handler talks to a
+#: live appliance (or a tenant behind it); a hung connector op once held a
+#: session for 20 minutes with nothing to show for it. Override per process
+#: with ``FSR_MCP_TOOL_TIMEOUT`` (seconds; ``0`` disables the ceiling).
+DEFAULT_TOOL_TIMEOUT = 120.0
+#: Headroom added to a tool's own ``timeout`` argument, so the tool's polite
+#: "still running" answer wins over the hard ceiling.
+_TIMEOUT_MARGIN = 30.0
+
+
+def _tool_deadline(args: dict[str, Any]) -> float | None:
+    """Seconds this call may run, or None for no ceiling.
+
+    A tool that takes its own ``timeout`` (wait_for_playbook_run,
+    install_connector, ...) is bounded by that value plus a margin; every other
+    tool gets ``FSR_MCP_TOOL_TIMEOUT`` (default 120s).
+    """
+    raw = os.environ.get("FSR_MCP_TOOL_TIMEOUT", "").strip()
+    try:
+        base = float(raw) if raw else DEFAULT_TOOL_TIMEOUT
+    except ValueError:
+        base = DEFAULT_TOOL_TIMEOUT
+    if base <= 0:
+        return None
+    own = args.get("timeout")
+    if isinstance(own, (int, float)) and not isinstance(own, bool) and own > 0:
+        return max(base, float(own) + _TIMEOUT_MARGIN)
+    return base
+
+
+class ToolTimeout(TimeoutError):
+    """A tool call exceeded its wall-clock deadline."""
+
+
+def _call_with_deadline(fn, deadline: float | None, *, tool: str):
+    """Run ``fn()``; raise :class:`ToolTimeout` if it outlives ``deadline``.
+
+    The call runs on a daemon thread, so a wedged socket cannot keep the MCP
+    server alive at shutdown. The thread cannot be killed: on timeout it is
+    abandoned and may still finish its request in the background.
+    """
+    if deadline is None:
+        return fn()
+    box: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+            box["error"] = exc
+
+    t = threading.Thread(target=_run, name=f"fsr-tool-{tool}", daemon=True)
+    t.start()
+    t.join(deadline)
+    if t.is_alive():
+        raise ToolTimeout(
+            f"{tool} did not finish within {deadline:g}s and was abandoned. The request may still "
+            "complete on the appliance: read the state back (a read-only call) before retrying a "
+            "mutating tool. Raise the limit with FSR_MCP_TOOL_TIMEOUT, or pass a larger 'timeout' "
+            "to tools that take one."
+        )
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def _agent_error(exc: Exception, *, tool: str) -> dict[str, Any]:
     """Render an exception as a structured, agent-readable error dict."""
     err: dict[str, Any] = {
@@ -3108,7 +3175,7 @@ def dispatch(client, name: str, arguments: dict[str, Any] | None = None) -> Any:
     if not spec.mutating and "offset" not in (spec.input_schema.get("properties") or {}):
         offset = args.pop("offset", None)
     try:
-        result = spec.handler(client, **args)
+        result = _call_with_deadline(lambda: spec.handler(client, **args), _tool_deadline(args), tool=name)
         if offset:
             result = _skip(result, int(offset))
     except TypeError as exc:  # bad/missing arguments for the handler

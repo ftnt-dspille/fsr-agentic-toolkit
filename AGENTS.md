@@ -54,6 +54,7 @@ its own (e.g. re-running `validate_connector` after a single edit).
 ## Safety knobs (set in the MCP server's `env`)
 
 - `FSR_MCP_READONLY=1` - hide and refuse every mutating tool.
+- `FSR_MCP_TOOL_TIMEOUT=<seconds>` - wall-clock ceiling on every tool call (default 120; `0` disables). A tool with its own `timeout` argument gets that plus 30s. A timed-out call returns a `ToolTimeout` error and may still finish on the appliance: read state back before retrying a mutating tool.
 - `FSR_MCP_ALLOW_TOOLS` / `FSR_MCP_DENY_TOOLS` - comma-separated names or globs to
   narrow the surface.
 
