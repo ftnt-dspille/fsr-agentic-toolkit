@@ -2,6 +2,7 @@
 
     fsr-agentic-toolkit init --url fortisoar.example.com --api-key <key>
     fsr-agentic-toolkit mcp                         # the MCP server (stdio)
+    fsr-agentic-toolkit mcp --http --port 8765      # the same server over HTTP (bearer token)
     fsr-agentic-toolkit tools                       # what the gate lets through
     fsr-agentic-toolkit debug-playbook-run --playbook-or-id "Close Alert"
     fsr-agentic-toolkit survey-box --modules alerts,heists --json
@@ -98,6 +99,11 @@ def _tools(args: argparse.Namespace) -> int:
 
 
 def _mcp(args: argparse.Namespace) -> int:
+    if args.http:
+        from .verbs.mcp_http import serve_http
+
+        serve_http(args.host, args.port, token_file=args.token_file, certfile=args.certfile, keyfile=args.keyfile)
+        return 0
     from .verbs.mcp import main as serve
 
     serve()
@@ -111,7 +117,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     init_cmd.build_subparser(sub)
     skills_cmd.build_subparser(sub)
-    sub.add_parser("mcp", help="run the MCP server on stdio").set_defaults(func=_mcp)
+    p_mcp = sub.add_parser("mcp", help="run the MCP server (stdio; --http to serve it over HTTP)")
+    p_mcp.add_argument("--http", action="store_true",
+                       help="serve over streamable HTTP at /mcp instead of stdio")
+    p_mcp.add_argument("--host", default="127.0.0.1", help="--http: address to listen on (default 127.0.0.1)")
+    p_mcp.add_argument("--port", type=int, default=8765, help="--http: port (default 8765)")
+    p_mcp.add_argument("--token-file", help="--http: file holding the bearer token (else $FSR_MCP_TOKEN); "
+                                            "required off loopback")
+    p_mcp.add_argument("--certfile", help="--http: TLS certificate (PEM); prints its SHA-256 fingerprint")
+    p_mcp.add_argument("--keyfile", help="--http: TLS private key (PEM)")
+    p_mcp.set_defaults(func=_mcp)
     sub.add_parser("tools", help="list the tools the gate allows, with their tier").set_defaults(func=_tools)
     p_call = sub.add_parser("call", help="call any tool by name with JSON arguments")
     p_call.add_argument("tool")

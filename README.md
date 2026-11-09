@@ -79,6 +79,21 @@ fsr-agentic-toolkit call search_records '{"module": "alerts", "limit": 5}'
 fsr-agentic-toolkit mcp        # MCP server on stdio
 ```
 
+### Serve it to another machine (HTTP)
+
+`mcp --http` serves the same server over streamable HTTP at `/mcp`, for a client on another machine (for example
+FortiAgent on a laptop, with the server on a lab VM next to FortiSOAR). Every request needs
+`Authorization: Bearer <token>`; the token comes from `$FSR_MCP_TOKEN` or `--token-file`, and the server refuses to
+listen off loopback without one. With `--certfile`/`--keyfile` it serves HTTPS and prints the certificate's SHA-256
+fingerprint at start.
+
+```
+FSR_MCP_TOKEN=<token> fsr-agentic-toolkit mcp --http --host 0.0.0.0 --port 8765 \
+  --certfile cert.pem --keyfile key.pem
+fortiagent mcp add "FortiSOAR" --url https://<vm>:8765/mcp --header "Authorization: Bearer <token>" \
+  --trust-fingerprint <sha256 printed at start>
+```
+
 ## Agent skills
 
 The toolkit ships skills that teach a coding agent how to use it well: playbook

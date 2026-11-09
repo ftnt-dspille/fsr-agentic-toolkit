@@ -1,0 +1,123 @@
+"""The MCP server over streamable HTTP, for a client on another machine.
+
+    fsr-agentic-toolkit mcp --http [--host 127.0.0.1] [--port 8765] [--token-file PATH]
+                            [--certfile cert.pem --keyfile key.pem]
+
+Same server as stdio (:func:`fsr_agentic_toolkit.verbs.mcp.build_server`, same tools,
+same one-call-at-a-time lock), served at ``/mcp``. Every request needs
+``Authorization: Bearer <token>``; the token comes from ``$FSR_MCP_TOKEN`` or
+``--token-file``. Without a token the server only starts on a loopback host.
+With ``--certfile``/``--keyfile`` it serves HTTPS and prints the certificate's
+SHA-256 fingerprint (for ``fortiagent mcp add --trust-fingerprint``).
+"""
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import hmac
+import ipaddress
+import os
+import ssl
+import sys
+from pathlib import Path
+from typing import Any
+
+TOKEN_ENV = "FSR_MCP_TOKEN"
+MCP_PATH = "/mcp"
+
+
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def load_token(token_file: str | None) -> str | None:
+    """The bearer token: ``--token-file`` first, then ``$FSR_MCP_TOKEN``. Blank means none."""
+    if token_file:
+        tok = Path(token_file).read_text(encoding="utf-8").strip()
+    else:
+        tok = os.environ.get(TOKEN_ENV, "").strip()
+    return tok or None
+
+
+def cert_fingerprint(certfile: str) -> str:
+    """SHA-256 of the leaf certificate's DER, as colon-separated upper hex."""
+    pem = Path(certfile).read_text(encoding="utf-8")
+    der = ssl.PEM_cert_to_DER_cert(pem)
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+
+
+class BearerAuth:
+    """ASGI middleware: 401 unless ``Authorization: Bearer <token>`` matches (constant-time)."""
+
+    def __init__(self, app: Any, token: str | None) -> None:
+        self.app = app
+        self._expected = f"Bearer {token}".encode() if token else None
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or self._expected is None:
+            await self.app(scope, receive, send)
+            return
+        got = b""
+        for name, value in scope.get("headers") or []:
+            if name == b"authorization":
+                got = value
+                break
+        if not hmac.compare_digest(got, self._expected):
+            body = b'{"error": "unauthorized: send Authorization: Bearer <token>"}'
+            await send({"type": "http.response.start", "status": 401,
+                        "headers": [(b"content-type", b"application/json"),
+                                    (b"www-authenticate", b"Bearer"),
+                                    (b"content-length", str(len(body)).encode())]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
+def build_app(target: Any, token: str | None) -> Any:
+    """Starlette app serving ``build_server(target)`` at ``/mcp``, behind :class:`BearerAuth`."""
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    from .mcp import build_server
+
+    manager = StreamableHTTPSessionManager(app=build_server(target))
+
+    async def handle(scope: Any, receive: Any, send: Any) -> None:
+        await manager.handle_request(scope, receive, send)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Any):  # type: ignore[no-untyped-def]
+        async with manager.run():
+            yield
+
+    app = Starlette(routes=[Mount(MCP_PATH, app=handle)], lifespan=lifespan)
+    return BearerAuth(app, token)
+
+
+def serve_http(host: str, port: int, *, token_file: str | None = None, certfile: str | None = None,
+               keyfile: str | None = None, target: Any = None) -> None:
+    """Run the HTTP server until interrupted. Refuses a non-loopback host without a token."""
+    import uvicorn
+    from pyfsr.instances import InstanceRegistry
+
+    token = load_token(token_file)
+    if token is None and not is_loopback(host):
+        raise SystemExit(f"refusing to listen on {host} without a token: set ${TOKEN_ENV} or pass --token-file")
+    if bool(certfile) != bool(keyfile):
+        raise SystemExit("--certfile and --keyfile go together")
+    if target is None:
+        target = InstanceRegistry.load()
+    scheme = "https" if certfile else "http"
+    print(f"fsr-agentic-toolkit MCP over HTTP: {scheme}://{host}:{port}{MCP_PATH}"
+          f" ({'bearer token required' if token else 'NO token: loopback only'})", file=sys.stderr)
+    if certfile:
+        print(f"certificate SHA-256 fingerprint: {cert_fingerprint(certfile)}", file=sys.stderr)
+    uvicorn.run(build_app(target, token), host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile,
+                log_level="warning")
