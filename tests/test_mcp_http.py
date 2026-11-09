@@ -68,7 +68,7 @@ def test_foreign_host_header_is_rejected(server):
     from urllib.parse import urlparse
     u = urlparse(server)
     c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
-    c.putrequest("POST", u.path.rstrip("/") + "/", skip_host=True)   # past the Mount redirect
+    c.putrequest("POST", u.path, skip_host=True)
     for k, v in {"Host": "evil.example:80", "Authorization": "Bearer s3cret", "Content-Type": "application/json",
                  "Accept": "application/json, text/event-stream", "Content-Length": "2"}.items():
         c.putheader(k, v)
@@ -114,3 +114,14 @@ def test_tools_list_round_trip(server):
 
     names = asyncio.run(go())
     assert "list_modules" in names or len(names) > 10
+
+
+def test_mcp_path_is_served_exactly_with_no_redirect(server):
+    """POST /mcp must not 307 to /mcp/: behind a reverse proxy that redirect names this server's loopback address."""
+    import http.client
+    from urllib.parse import urlparse
+    u = urlparse(server)
+    c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
+    c.request("POST", u.path, body=b"{}", headers={"Authorization": "Bearer s3cret", "Content-Type": "application/json",
+                                                    "Accept": "application/json, text/event-stream"})
+    assert c.getresponse().status not in (301, 302, 307, 308)

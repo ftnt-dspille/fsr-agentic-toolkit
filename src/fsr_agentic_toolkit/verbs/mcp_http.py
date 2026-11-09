@@ -87,7 +87,7 @@ def build_app(target: Any, token: str, host: str = "127.0.0.1", port: int | None
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from mcp.server.transport_security import TransportSecuritySettings
     from starlette.applications import Starlette
-    from starlette.routing import Mount
+    from starlette.routing import Route
 
     from .mcp import build_server
 
@@ -102,15 +102,18 @@ def build_app(target: Any, token: str, host: str = "127.0.0.1", port: int | None
                                          allowed_origins=[f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts])
     manager = StreamableHTTPSessionManager(app=build_server(target), security_settings=security)
 
-    async def handle(scope: Any, receive: Any, send: Any) -> None:
-        await manager.handle_request(scope, receive, send)
+    class Handle:  # a class instance, so Starlette's Route passes it the raw ASGI call
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            await manager.handle_request(scope, receive, send)
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: Any):  # type: ignore[no-untyped-def]
         async with manager.run():
             yield
 
-    app = Starlette(routes=[Mount(MCP_PATH, app=handle)], lifespan=lifespan)
+    # Route, not Mount: a Mount answers POST /mcp with a 307 to /mcp/, and behind a reverse proxy that redirect
+    # names this server's own loopback address.
+    app = Starlette(routes=[Route(MCP_PATH, endpoint=Handle(), methods=["GET", "POST", "DELETE"])], lifespan=lifespan)
     return BearerAuth(app, token)
 
 
