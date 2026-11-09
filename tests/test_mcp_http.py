@@ -48,14 +48,19 @@ def test_no_tokenless_mode():
         mcp_http.build_app(FakeClient(), "")
 
 
-def test_generates_token_when_none_given(monkeypatch, capsys):
+def test_generates_token_when_none_given(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv(mcp_http.TOKEN_ENV, raising=False)
+    out = tmp_path / "tok"
+    monkeypatch.setenv("FSR_MCP_TOKEN_OUT", str(out))
     seen = {}
     import uvicorn
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.setdefault("app", app))
     mcp_http.serve_http("0.0.0.0", 1, target=FakeClient())
-    assert "generated token for this run: " in capsys.readouterr().err
-    assert seen["app"]._expected.startswith(b"Bearer ")
+    err = capsys.readouterr().err
+    tok = out.read_text().strip()
+    assert str(out) in err and tok not in err          # path printed, secret never
+    assert oct(out.stat().st_mode & 0o777) == "0o600"
+    assert seen["app"]._expected == f"Bearer {tok}".encode()
 
 
 def test_foreign_host_header_is_rejected(server):

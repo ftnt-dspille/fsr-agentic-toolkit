@@ -6,7 +6,7 @@
 Same server as stdio (:func:`fsr_agentic_toolkit.verbs.mcp.build_server`, same tools,
 same one-call-at-a-time lock), served at ``/mcp``. Every request needs
 ``Authorization: Bearer <token>``; the token comes from ``$FSR_MCP_TOKEN`` or
-``--token-file``. With neither, a random token is generated at start and printed: there is no tokenless mode.
+``--token-file``. With neither, a random token is generated at start and saved owner-only (never printed): there is no tokenless mode.
 On a specific host, Host headers are also checked (DNS-rebinding protection).
 With ``--certfile``/``--keyfile`` it serves HTTPS and prints the certificate's
 SHA-256 fingerprint (for ``fortiagent mcp add --trust-fingerprint``).
@@ -134,7 +134,15 @@ def serve_http(host: str, port: int, *, token_file: str | None = None, certfile:
     print(f"fsr-agentic-toolkit MCP over HTTP: {scheme}://{host}:{port}{MCP_PATH}"
           " (bearer token required)", file=sys.stderr)
     if generated:
-        print(f"no ${TOKEN_ENV} or --token-file: generated token for this run: {token}", file=sys.stderr)
+        # Never log the secret (a service's stderr lands in journald): write it to an owner-only file instead.
+        tok_path = Path(os.environ.get("FSR_MCP_TOKEN_OUT", Path.home() / ".config/fsr-agentic-toolkit/mcp-token"))
+        tok_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(tok_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token + "\n")
+        os.chmod(tok_path, 0o600)
+        print(f"no ${TOKEN_ENV} or --token-file: generated a token for this run, saved (mode 600) to {tok_path}",
+              file=sys.stderr)
     if certfile:
         print(f"certificate SHA-256 fingerprint: {cert_fingerprint(certfile)}", file=sys.stderr)
     uvicorn.run(build_app(target, token, host, port), host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile,
