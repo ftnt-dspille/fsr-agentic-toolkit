@@ -43,10 +43,32 @@ def server():
     t.join(timeout=10)
 
 
-def test_refuses_public_host_without_token(monkeypatch):
+def test_no_tokenless_mode():
+    with pytest.raises(ValueError, match="token is required"):
+        mcp_http.build_app(FakeClient(), "")
+
+
+def test_generates_token_when_none_given(monkeypatch, capsys):
     monkeypatch.delenv(mcp_http.TOKEN_ENV, raising=False)
-    with pytest.raises(SystemExit, match="without a token"):
-        mcp_http.serve_http("0.0.0.0", 1, target=FakeClient())
+    seen = {}
+    import uvicorn
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.setdefault("app", app))
+    mcp_http.serve_http("0.0.0.0", 1, target=FakeClient())
+    assert "generated token for this run: " in capsys.readouterr().err
+    assert seen["app"]._expected.startswith(b"Bearer ")
+
+
+def test_foreign_host_header_is_rejected(server):
+    import http.client
+    from urllib.parse import urlparse
+    u = urlparse(server)
+    c = http.client.HTTPConnection(u.hostname, u.port, timeout=10)
+    c.putrequest("POST", u.path.rstrip("/") + "/", skip_host=True)   # past the Mount redirect
+    for k, v in {"Host": "evil.example:80", "Authorization": "Bearer s3cret", "Content-Type": "application/json",
+                 "Accept": "application/json, text/event-stream", "Content-Length": "2"}.items():
+        c.putheader(k, v)
+    c.endheaders(b"{}")
+    assert c.getresponse().status in (400, 403, 421)
 
 
 def test_token_from_file_wins_over_env(tmp_path, monkeypatch):

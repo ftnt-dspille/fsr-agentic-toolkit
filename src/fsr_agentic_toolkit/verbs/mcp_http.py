@@ -6,7 +6,8 @@
 Same server as stdio (:func:`fsr_agentic_toolkit.verbs.mcp.build_server`, same tools,
 same one-call-at-a-time lock), served at ``/mcp``. Every request needs
 ``Authorization: Bearer <token>``; the token comes from ``$FSR_MCP_TOKEN`` or
-``--token-file``. Without a token the server only starts on a loopback host.
+``--token-file``. With neither, a random token is generated at start and printed: there is no tokenless mode.
+On a specific host, Host headers are also checked (DNS-rebinding protection).
 With ``--certfile``/``--keyfile`` it serves HTTPS and prints the certificate's
 SHA-256 fingerprint (for ``fortiagent mcp add --trust-fingerprint``).
 """
@@ -57,10 +58,12 @@ class BearerAuth:
 
     def __init__(self, app: Any, token: str | None) -> None:
         self.app = app
-        self._expected = f"Bearer {token}".encode() if token else None
+        if not token:
+            raise ValueError("a bearer token is required")
+        self._expected = f"Bearer {token}".encode()
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] != "http" or self._expected is None:
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         got = b""
@@ -79,15 +82,25 @@ class BearerAuth:
         await self.app(scope, receive, send)
 
 
-def build_app(target: Any, token: str | None) -> Any:
+def build_app(target: Any, token: str, host: str = "127.0.0.1", port: int | None = None) -> Any:
     """Starlette app serving ``build_server(target)`` at ``/mcp``, behind :class:`BearerAuth`."""
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from mcp.server.transport_security import TransportSecuritySettings
     from starlette.applications import Starlette
     from starlette.routing import Mount
 
     from .mcp import build_server
 
-    manager = StreamableHTTPSessionManager(app=build_server(target))
+    # DNS-rebinding protection: only accept the Host names this server is reachable as. On a wildcard bind
+    # the public name is unknown, so the Host check is off there and the bearer token is the gate.
+    wildcard = host in ("0.0.0.0", "::", "")
+    if is_loopback(host):
+        hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+    else:
+        hosts = [f"{host}:*"]
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=not wildcard, allowed_hosts=hosts,
+                                         allowed_origins=[f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts])
+    manager = StreamableHTTPSessionManager(app=build_server(target), security_settings=security)
 
     async def handle(scope: Any, receive: Any, send: Any) -> None:
         await manager.handle_request(scope, receive, send)
@@ -108,16 +121,21 @@ def serve_http(host: str, port: int, *, token_file: str | None = None, certfile:
     from pyfsr.instances import InstanceRegistry
 
     token = load_token(token_file)
-    if token is None and not is_loopback(host):
-        raise SystemExit(f"refusing to listen on {host} without a token: set ${TOKEN_ENV} or pass --token-file")
+    generated = token is None
+    if token is None:
+        import secrets
+
+        token = secrets.token_urlsafe(32)
     if bool(certfile) != bool(keyfile):
         raise SystemExit("--certfile and --keyfile go together")
     if target is None:
         target = InstanceRegistry.load()
     scheme = "https" if certfile else "http"
     print(f"fsr-agentic-toolkit MCP over HTTP: {scheme}://{host}:{port}{MCP_PATH}"
-          f" ({'bearer token required' if token else 'NO token: loopback only'})", file=sys.stderr)
+          " (bearer token required)", file=sys.stderr)
+    if generated:
+        print(f"no ${TOKEN_ENV} or --token-file: generated token for this run: {token}", file=sys.stderr)
     if certfile:
         print(f"certificate SHA-256 fingerprint: {cert_fingerprint(certfile)}", file=sys.stderr)
-    uvicorn.run(build_app(target, token), host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile,
+    uvicorn.run(build_app(target, token, host, port), host=host, port=port, ssl_certfile=certfile, ssl_keyfile=keyfile,
                 log_level="warning")
