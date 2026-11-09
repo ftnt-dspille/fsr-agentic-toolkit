@@ -123,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp.add_argument("--host", default="127.0.0.1", help="--http: address to listen on (default 127.0.0.1)")
     p_mcp.add_argument("--port", type=int, default=8765, help="--http: port (default 8765)")
     p_mcp.add_argument("--token-file", help="--http: file holding the bearer token (else $FSR_MCP_TOKEN); "
-                                            "required off loopback")
+                                            "else one is generated and printed")
     p_mcp.add_argument("--certfile", help="--http: TLS certificate (PEM); prints its SHA-256 fingerprint")
     p_mcp.add_argument("--keyfile", help="--http: TLS private key (PEM)")
     p_mcp.set_defaults(func=_mcp)

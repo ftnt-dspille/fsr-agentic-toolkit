@@ -83,8 +83,8 @@ fsr-agentic-toolkit mcp        # MCP server on stdio
 
 `mcp --http` serves the same server over streamable HTTP at `/mcp`, for a client on another machine (for example
 FortiAgent on a laptop, with the server on a lab VM next to FortiSOAR). Every request needs
-`Authorization: Bearer <token>`; the token comes from `$FSR_MCP_TOKEN` or `--token-file`, and the server refuses to
-listen off loopback without one. With `--certfile`/`--keyfile` it serves HTTPS and prints the certificate's SHA-256
+`Authorization: Bearer <token>`; the token comes from `$FSR_MCP_TOKEN` or `--token-file`; with neither, it generates
+one at start and prints it. On a specific `--host` it also rejects foreign Host headers (DNS rebinding). With `--certfile`/`--keyfile` it serves HTTPS and prints the certificate's SHA-256
 fingerprint at start.
 
 ```
