@@ -32,11 +32,11 @@ message and self-correct.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 import logging
 import os
 import re
 import threading
+from datetime import UTC, datetime
 from typing import Any
 
 from pyfsr.exceptions import (
@@ -3085,12 +3085,12 @@ def _time_span_note(items: list[Any], m: int) -> str:
         except (TypeError, ValueError):
             pass
         try:   # "2026-11-23 12:35:04" (FortiAnalyzer itime) or ISO
-            return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(str(v)).timestamp()
         except ValueError:
             return None
 
     def show(v: float) -> str:
-        return datetime.fromtimestamp(v, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ") if v > 1e9 else f"{v:.0f}"
+        return datetime.fromtimestamp(v, tz=UTC).strftime("%Y-%m-%d %H:%M:%SZ") if v > 1e9 else f"{v:.0f}"
 
     raw = [r.get(key) for r in items if isinstance(r, dict)]
     vals = [num(v) for v in raw]
