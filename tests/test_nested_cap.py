@@ -47,3 +47,15 @@ def test_hint_names_the_order_and_time_span_of_the_shown_rows():
 def test_hint_says_the_operation_returned_everything():
     hint = T._cap_output(_faz_like(40), tool="run_connector_operation", cap=4000)["_truncated"]["hint"]
     assert "returned all 40" in hint and "will not bring them back" in hint and "fields=" in hint
+
+
+def test_listing_shows_the_parameters_a_choice_opens():
+    params = [{"name": "address_group_category", "type": "select", "required": True,
+               "onchange": {"IPv4 Group": [{"name": "group_name", "type": "text", "required": True},
+                                           {"name": "add_member", "type": "text"}]}},
+              {"name": "vdom", "type": "text"}]
+    out = T._flatten_operation_params(params)
+    names = {p["name"]: p for p in out}
+    assert set(names) == {"address_group_category", "group_name", "add_member", "vdom"}
+    assert names["add_member"]["when"] == "address_group_category = IPv4 Group" and names["group_name"]["required"] is True
+    assert "when" not in names["vdom"]

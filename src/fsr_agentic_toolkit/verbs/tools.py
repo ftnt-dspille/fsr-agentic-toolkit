@@ -648,6 +648,30 @@ def _h_create_user(client, *, loginid, firstname, lastname, email, roles, passwo
 
 
 # -- connector install / discovery -------------------------------------------
+def _flatten_operation_params(params: list, when: str | None = None) -> list[dict[str, Any]]:
+    """An operation's parameters, with the ones that only appear for a choice listed too.
+
+    A connector parameter can open more parameters when it takes a value (`address_group_category`
+    = "IPv4 Group" opens `group_name`, `add_member`, ...). Listing only the top level hid the names
+    that actually do the work, so an agent guessed them and the connector ignored the guess. Each
+    nested one carries `when`, the choice that opens it."""
+    out: list[dict[str, Any]] = []
+    for p in params:
+        if not isinstance(p, dict):
+            continue
+        entry = {"name": p.get("name"), "title": p.get("title"), "type": p.get("type"),
+                 "required": p.get("required", False)}
+        if when:
+            entry["when"] = when
+        out.append({k: v for k, v in entry.items() if v not in (None, "")} | {"required": entry["required"]})
+        nested = p.get("onchange")
+        if isinstance(nested, dict):
+            for value, sub in nested.items():
+                if isinstance(sub, list):
+                    out.extend(_flatten_operation_params(sub, f"{p.get('name')} = {value}"))
+    return out
+
+
 def _h_list_connector_operations(client, *, connector, version=None) -> Any:
     ops = client.connectors.operations(connector, version=version)
     slim = []
@@ -657,16 +681,7 @@ def _h_list_connector_operations(client, *, connector, version=None) -> Any:
             "operation": d.get("operation") or d.get("name"),
             "title": d.get("title"),
             "description": d.get("description"),
-            "parameters": [
-                {
-                    "name": p.get("name"),
-                    "title": p.get("title"),
-                    "type": p.get("type"),
-                    "required": p.get("required", False),
-                }
-                for p in (d.get("parameters") or [])
-                if isinstance(p, dict)
-            ],
+            "parameters": _flatten_operation_params(d.get("parameters") or []),
         }
         slim.append({k: v for k, v in entry.items() if v not in (None, "")})
     return {"connector": connector, "operations": slim, "count": len(slim)}
