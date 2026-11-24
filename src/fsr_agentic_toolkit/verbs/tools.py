@@ -32,6 +32,7 @@ message and self-correct.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import logging
 import os
 import re
@@ -499,9 +500,10 @@ def _h_healthcheck_connector(client, *, connector, config=None) -> Any:
     return client.connectors.healthcheck(connector, config=config)
 
 
-def _h_run_connector_operation(client, *, connector, operation, params=None, config=None) -> Any:
+def _h_run_connector_operation(client, *, connector, operation, params=None, config=None, fields=None) -> Any:
     # ExecuteResult is a model, not a dict: keep the registry's JSON-safe promise.
-    return to_jsonable(client.connectors.execute(connector, operation, params=params or {}, config=config))
+    out = to_jsonable(client.connectors.execute(connector, operation, params=params or {}, config=config))
+    return _project_fields(out, fields) if fields else out
 
 
 #: The FortiAI Agentic Assistant connector that owns the chat-session store.
@@ -1849,6 +1851,14 @@ _TOOLS: tuple[ToolSpec, ...] = (
                     "type": "string",
                     "description": "Configuration UUID or display name; omit for the default config.",
                 },
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional: keep only these keys on each record of the result's main list "
+                        "(e.g. log rows), so more records fit in one response."
+                    ),
+                },
             },
             ["connector", "operation"],
         ),
@@ -3041,6 +3051,104 @@ def _skip(result: Any, offset: int) -> Any:
     return {**result, key: result[key][offset:], "offset": offset}
 
 
+_TIME_KEYS = ("itime", "time", "timestamp", "date", "createDate", "modifyDate", "eventtime")
+
+
+def _time_span_note(items: list[Any], m: int) -> str:
+    """For a cut list of timed records: which slice of the time range the shown rows cover, and the order.
+
+    A newest-first log list cut to its first rows shows only the latest traffic; an agent reading
+    those rows as "the" answer misses how the event began. Saying so is the tool's job.
+    """
+    key = next((k for k in _TIME_KEYS if all(isinstance(r, dict) and k in r for r in items[: max(m, 1)])), None)
+    if key is None:
+        return ""
+
+    def num(v: Any) -> float | None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+        try:   # "2026-11-23 12:35:04" (FortiAnalyzer itime) or ISO
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+
+    def show(v: float) -> str:
+        return datetime.fromtimestamp(v, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ") if v > 1e9 else f"{v:.0f}"
+
+    raw = [r.get(key) for r in items if isinstance(r, dict)]
+    vals = [num(v) for v in raw]
+    if any(v is None for v in vals) or len(vals) < 2:
+        return ""
+
+    def label(sub: range) -> str:
+        lo = min(sub, key=lambda i: vals[i]); hi = max(sub, key=lambda i: vals[i])
+        as_text = lambda i: show(vals[i]) if isinstance(raw[i], (int, float)) or str(raw[i]).isdigit() else str(raw[i])
+        return f"{as_text(lo)} to {as_text(hi)}"
+
+    order = "newest first" if vals[0] >= vals[-1] else "oldest first"
+    return (f" Records are {order} by {key}: the {m} shown span {label(range(m))}; "
+            f"all {len(vals)} span {label(range(len(vals)))}.")
+
+
+def _dominant_list_path(result: Any, max_depth: int = 5) -> list[str] | None:
+    """Key path to the nested list of records that carries most of a result's weight.
+
+    Connector results wrap their rows a few levels down (FortiAnalyzer:
+    ``data.result.data``), where the top-level list-aware trim never looks. Returns
+    the path when one non-empty list of objects holds at least half the serialized
+    size, else None. Top-level lists are left to the caller's own path.
+    """
+    total = _serialized_len(result) or 0
+    best: tuple[int, list[str]] | None = None
+
+    def walk(v: Any, path: list[str]) -> None:
+        nonlocal best
+        if len(path) > max_depth or not isinstance(v, dict):
+            return
+        for k, x in v.items():
+            if isinstance(x, list) and x and all(isinstance(i, dict) for i in x) and len(path) >= 1:
+                size = _serialized_len(x) or 0
+                if best is None or size > best[0]:
+                    best = (size, [*path, k])
+            elif isinstance(x, dict):
+                walk(x, [*path, k])
+
+    walk(result, [])
+    if best and total and best[0] * 2 >= total:
+        return best[1]
+    return None
+
+
+def _with_list_at(result: Any, path: list[str], items: list[Any]) -> Any:
+    """A copy of ``result`` with the list at ``path`` replaced (only the dicts on the path are copied)."""
+    if not path:
+        return items
+    out = dict(result)
+    out[path[0]] = _with_list_at(result[path[0]], path[1:], items)
+    return out
+
+
+def _list_at(result: Any, path: list[str]) -> Any:
+    for k in path:
+        result = result[k]
+    return result
+
+
+def _project_fields(result: Any, fields: list[str]) -> Any:
+    """Keep only ``fields`` on each record of the result's dominant list (top-level or nested)."""
+    path = _dominant_list_path(result)
+    if path is None and isinstance(result, dict):
+        tops = [k for k, v in result.items() if isinstance(v, list) and v and all(isinstance(i, dict) for i in v)]
+        path = tops if len(tops) == 1 else None
+    if path is None:
+        return result
+    keep = set(fields)
+    rows = [{k: v for k, v in row.items() if k in keep} for row in _list_at(result, path)]
+    return _with_list_at(result, path, rows)
+
+
 def _cap_output(result: Any, *, tool: str, cap: int | None = None) -> Any:
     """Bound a tool result's serialized size for the agent transport.
 
@@ -3110,6 +3218,32 @@ def _cap_output(result: Any, *, tool: str, cap: int | None = None) -> Any:
             if fits and m >= 1:
                 return trial
             # else: even a single item overflows → blind preview below.
+
+    # Nested list-aware path: a connector result's rows sit a few keys down (data.result.data).
+    nested = _dominant_list_path(result)
+    if nested is not None:
+        items = _list_at(result, nested)
+        n = len(items)
+        where = ".".join(nested)
+
+        def _try_nested(m: int) -> tuple[bool, Any]:
+            trial = _with_list_at(result, nested, items[:m])
+            trial = {**trial, "_truncated": {
+                "tool": tool, "path": where, "shown": m, "total": n,
+                "hint": f"showing {m} of {n} records at {where}. The operation returned all {n}; only this size cap "
+                        "dropped the rest, so paging the operation (offset) will not bring them back. Call again with "
+                        "fields=[...] naming only the columns you need to see all of them." + _time_span_note(items, m),
+            }} if isinstance(trial, dict) else trial
+            size = _serialized_len(trial)
+            return (size is not None and size <= cap), trial
+
+        m = max(1, min(n - 1, (n * cap) // max(total, 1)))
+        fits, trial = _try_nested(m)
+        while m > 1 and not fits:
+            m -= max(1, m // 8)
+            fits, trial = _try_nested(m)
+        if fits:
+            return trial
 
     text = json.dumps(result, indent=2, default=str)
 
